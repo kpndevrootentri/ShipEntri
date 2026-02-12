@@ -1,367 +1,365 @@
-# DropDeploy -- How It Works
+# How It Works
 
-This document explains how DropDeploy works end to end, with a detailed
-step-by-step breakdown of the deployment pipeline.
+> End-to-end explanation of DropDeploy's runtime behavior.
+> For code structure and conventions, see [ARCHITECTURE.md](./ARCHITECTURE.md).
 
 ---
 
 ## 1. Overview
 
-DropDeploy is a web platform that lets users deploy projects instantly by
-pasting a GitHub repository URL. The system:
+DropDeploy lets users deploy projects instantly by pasting a GitHub repository URL. The system clones the repo, builds a Docker image, starts a container, and returns a live subdomain URL.
 
-1. Accepts a GitHub URL, project type, and deploy branch from the user.
-2. Queues a deployment job.
-3. Clones (or pulls) the repo at the configured branch, builds a Docker image, and starts a container.
-4. Returns a live subdomain URL (e.g. `my-app.dropdeploy.app`).
-5. Provides an interactive terminal for running commands inside the container.
+```mermaid
+graph LR
+    A[Paste GitHub URL] --> B[Queue Job]
+    B --> C[Clone Repo]
+    C --> D[Build Docker Image]
+    D --> E[Start Container]
+    E --> F[Live URL Ready]
 
-Two processes run side by side:
+    style A fill:#e0f2fe
+    style F fill:#dcfce7
+```
+
+**Two processes run side by side:**
 
 | Process | Command | Purpose |
 |---------|---------|---------|
-| **Next.js app** | `npm run dev` / `npm start` | Serves the UI and API routes |
-| **BullMQ worker** | `npm run worker` | Processes deployment jobs in the background |
+| **Next.js app** | `npm run dev` / `npm start` | UI + API routes |
+| **BullMQ worker** | `npm run worker` | Background deployment jobs |
 
 ---
 
 ## 2. System Architecture
 
-```
-┌──────────────────────────────────────────────────────────────┐
-│  Presentation Layer                                          │
-│  Next.js App Router + React / shadcn/ui                      │
-│  Pages: Landing, Login, Register, Dashboard, Project Detail  │
-├──────────────────────────────────────────────────────────────┤
-│  Application Layer                                           │
-│  API Routes: /api/auth/*, /api/projects/*, /api/health       │
-│  Middleware: JWT auth, route protection                       │
-├──────────────────────────────────────────────────────────────┤
-│  Domain Layer                                                │
-│  Services: Auth, Project, Deployment, Docker, Git, Terminal  │
-│  Types / DTOs, Zod Validators                                │
-├──────────────────────────────────────────────────────────────┤
-│  Infrastructure Layer                                        │
-│  Prisma (PostgreSQL), BullMQ (Redis),                        │
-│  Dockerode, simple-git, Nginx                                │
-└──────────────────────────────────────────────────────────────┘
+```mermaid
+graph TB
+    subgraph Client["Browser"]
+        UI[React UI + shadcn/ui]
+    end
+
+    subgraph Server["Next.js Server"]
+        API[API Routes]
+        MW[Middleware — JWT]
+        SVC[Services]
+    end
+
+    subgraph Worker["Worker Process"]
+        BW[BullMQ Worker]
+    end
+
+    subgraph External["Infrastructure"]
+        PG[(PostgreSQL)]
+        RD[(Redis)]
+        DK[Docker Engine]
+        NG[Nginx Proxy]
+    end
+
+    UI -->|HTTP| API
+    API --> MW
+    API --> SVC
+    SVC --> PG
+    SVC -->|enqueue| RD
+    RD -->|dequeue| BW
+    BW --> SVC
+    SVC --> DK
+    NG -->|route traffic| DK
+    UI -.->|subdomain| NG
 ```
 
 ---
 
 ## 3. Database Models
 
+```mermaid
+erDiagram
+    User ||--o{ Project : owns
+    Project ||--o{ Deployment : has
+
+    User {
+        string id PK "cuid"
+        string email UK
+        string passwordHash "bcrypt"
+        datetime createdAt
+    }
+
+    Project {
+        string id PK "cuid"
+        string name
+        string slug UK "used as subdomain"
+        string githubUrl
+        enum type "STATIC | NODEJS | NEXTJS | DJANGO"
+        string branch "default: main"
+        string userId FK
+    }
+
+    Deployment {
+        string id PK "cuid"
+        enum status "QUEUED | BUILDING | DEPLOYED | FAILED"
+        string buildStep "CLONING | BUILDING_IMAGE | STARTING"
+        int containerPort "host port 8000-9999"
+        string subdomain UK
+        text logs
+        datetime startedAt
+        datetime completedAt
+        string projectId FK
+    }
 ```
-User ──(1:N)──▶ Project ──(1:N)──▶ Deployment
-```
-
-### User
-| Field | Type | Notes |
-|-------|------|-------|
-| id | cuid | Primary key |
-| email | string | Unique |
-| passwordHash | string | bcrypt hashed |
-
-### Project
-| Field | Type | Notes |
-|-------|------|-------|
-| id | cuid | Primary key |
-| name | string | Display name |
-| slug | string | Unique, used as subdomain |
-| githubUrl | string | Repository URL |
-| type | enum | `STATIC`, `NODEJS`, `NEXTJS`, `DJANGO` |
-| branch | string | Git branch to deploy (default: `main`) |
-| userId | cuid | Foreign key to User |
-
-### Deployment
-| Field | Type | Notes |
-|-------|------|-------|
-| id | cuid | Primary key |
-| status | enum | `QUEUED` → `BUILDING` → `DEPLOYED` / `FAILED` |
-| buildStep | string? | Current build phase: `CLONING`, `BUILDING_IMAGE`, `STARTING` |
-| containerPort | int | Host port the container is mapped to |
-| subdomain | string | Unique, assigned from project slug |
-| logs | text | Build/error logs |
-| startedAt | DateTime? | When the build began |
-| completedAt | DateTime? | When the build finished (success or failure) |
-| projectId | cuid | Foreign key to Project |
 
 ---
 
-## 4. End-to-End User Flow
+## 4. User Flows
 
 ### 4.1 Registration & Login
 
-1. User visits `/register` and submits email + password.
-2. `POST /api/auth/register` validates input with Zod (`registerSchema`).
-3. `AuthService.register()`:
-   - Checks email uniqueness via `UserRepository`.
-   - Hashes password with `bcryptjs`.
-   - Stores user in PostgreSQL via Prisma.
-   - Signs a JWT (HS256) with `jose`.
-4. JWT is set as an `auth-token` httpOnly cookie via `lib/auth-cookie.ts`.
-5. User is redirected to `/dashboard`.
+```mermaid
+sequenceDiagram
+    actor U as User
+    participant P as /register page
+    participant API as POST /api/auth/register
+    participant AS as AuthService
+    participant DB as PostgreSQL
 
-Login follows the same flow but verifies the password instead of creating a user.
+    U->>P: Fill email + password
+    P->>API: POST { email, password }
+    API->>API: Zod validate (registerSchema)
+    API->>AS: register(email, password)
+    AS->>AS: bcrypt.hash(password)
+    AS->>DB: INSERT user
+    AS->>AS: sign JWT (jose, HS256)
+    AS-->>API: { accessToken, user }
+    API->>API: setAuthCookie(httpOnly)
+    API-->>P: 201 Created
+    P->>P: redirect to /dashboard
+```
 
-Logout clears the `auth-token` cookie via `POST /api/auth/logout`.
-
-Session validation is available via `GET /api/auth/session`.
+Login follows the same flow but verifies the password instead of creating a user. Logout clears the `auth-token` cookie via `POST /api/auth/logout`.
 
 ### 4.2 Project Creation
 
-1. User clicks "New Project" on the dashboard.
-2. Fills in: project name, GitHub URL, framework type (Static / Node.js / Next.js / Django), and optionally a branch (defaults to `main`).
+1. User clicks **"New Project"** on the dashboard.
+2. Fills in: project name, GitHub URL, framework type, and optionally a branch (defaults to `main`).
 3. `POST /api/projects` validates input with Zod (`createProjectSchema`).
-4. `ProjectService.create()`:
-   - Extracts user session from JWT cookie.
-   - Generates a unique slug from the project name.
-   - Inserts a `Project` row in PostgreSQL (including branch).
-5. Dashboard refreshes and shows the new project tile.
+4. `ProjectService.create()` generates a unique slug and inserts a `Project` row.
+5. Dashboard refreshes to show the new project tile.
 
-### 4.3 Project Detail
+### 4.3 Project Detail Page
 
-The project detail page has three tabs:
+The project detail page has **three tabs**:
 
-- **Overview** -- Deployment status, live URL, local network URL, deployment history.
-- **Settings** -- Edit name, description, framework type, deploy branch, or delete the project.
-- **Advanced** -- Container details, interactive terminal, Docker CLI commands reference.
-
-### 4.4 Deployment (detailed below)
-
-User clicks "Deploy" on a project tile. See Section 5.
-
-### 4.5 Interactive Terminal (detailed below)
-
-User runs commands in the deployed container. See Section 6.
+| Tab | Contents |
+|-----|----------|
+| **Overview** | Deployment status, live URL, local network URL, deployment history |
+| **Settings** | Edit name, description, framework type, deploy branch, or delete the project |
+| **Advanced** | Container details, interactive terminal, Docker CLI commands reference |
 
 ---
 
-## 5. Deployment Pipeline -- Step by Step
+## 5. Deployment Pipeline
 
-### Step 1: User triggers deploy
+This is the core of DropDeploy. When a user clicks **"Deploy"**, the following 9-step pipeline executes:
 
-The user clicks "Deploy" on a project tile. The frontend calls:
+```mermaid
+flowchart TB
+    T["User clicks Deploy"] --> S1
 
+    subgraph API["API Layer (synchronous)"]
+        S1["Step 1: POST /api/projects/:id/deploy"]
+        S1 --> S2["Step 2: Create deployment record (QUEUED) + enqueue job"]
+    end
+
+    S2 -->|async via Redis| S3
+
+    subgraph WK["Worker Process (asynchronous)"]
+        S3["Step 3: Worker picks up job"]
+        S3 --> S4["Step 4: Clone or update repo"]
+        S4 --> S5["Step 5: Select Dockerfile template"]
+        S5 --> S6["Step 6: Build Docker image"]
+        S6 --> S7["Step 7: Run container"]
+        S7 --> S8["Step 8: Finalize deployment"]
+    end
+
+    S8 --> S9["Step 9: Nginx routes traffic to container"]
+    S9 --> LIVE["Live at my-app.dropdeploy.app"]
+
+    style T fill:#e0f2fe
+    style LIVE fill:#dcfce7
 ```
-POST /api/projects/:id/deploy
-```
+
+### Step 1: Trigger deploy
 
 **File:** `src/app/api/projects/[id]/deploy/route.ts`
 
 - Extracts user session from JWT cookie via `getSession(req)`.
 - Calls `deploymentService.createDeployment(projectId, userId)`.
 
----
-
-### Step 2: Create deployment record and enqueue job
+### Step 2: Create record & enqueue
 
 **File:** `src/services/deployment/deployment.service.ts` -- `createDeployment()`
 
-1. **Look up the project** in PostgreSQL via `projectRepository.findById()`.
-2. **Authorize** -- confirms `project.userId === userId` (only the owner can deploy).
-3. **Insert a Deployment row** with `status: QUEUED` into PostgreSQL.
-4. **Push a job** onto the Redis-backed BullMQ `deployments` queue:
+1. Looks up the project via `projectRepository.findById()`.
+2. Authorizes -- confirms `project.userId === userId`.
+3. Inserts a `Deployment` row with `status: QUEUED`.
+4. Pushes a job onto the BullMQ `deployments` queue:
    ```json
    { "deploymentId": "clxyz...", "projectId": "clxyz..." }
    ```
-   Queue settings:
-   - 3 retry attempts
-   - Exponential backoff (2s, 4s, 8s)
-   - Keeps last 100 completed jobs
-5. **Graceful degradation** -- if Redis is down, the deployment record is still
-   created (can be retried later). A warning is logged.
-6. **API responds** with `{ deploymentId, message: "Deployment queued." }`.
-
----
+5. **Queue settings:** 3 retry attempts, exponential backoff (2s, 4s, 8s), keeps last 100 completed jobs.
+6. **Graceful degradation:** If Redis is down, the deployment record is still created and can be retried later.
 
 ### Step 3: Worker picks up the job
 
 **File:** `src/workers/deployment.worker.ts`
 
 - Runs as a **separate process** via `npm run worker`.
-- A BullMQ `Worker` listens on the `deployments` queue.
+- BullMQ `Worker` listens on the `deployments` queue.
 - **Concurrency: 5** -- up to 5 builds run simultaneously.
-- When a job arrives, it calls `deploymentService.buildAndDeploy(deploymentId)`.
+- Calls `deploymentService.buildAndDeploy(deploymentId)`.
 
----
+### Step 4: Clone or update repo
 
-### Step 4: Clone or update the repository
-
-**File:** `src/services/deployment/deployment.service.ts` -- `buildAndDeploy()`
 **File:** `src/services/git/git.service.ts` -- `ensureRepo()`
 
-1. Fetches the deployment + its parent project from the database.
-2. Updates deployment status to `BUILDING` and sets `startedAt` timestamp.
-3. Updates `buildStep` to `CLONING`.
-4. Calls `gitService.ensureRepo(githubUrl, projectSlug, branch)`:
-   - **First deploy**: Clones the repo into `PROJECTS_DIR/<project-slug>/` with the target branch.
-   - **Subsequent deploys**: Fetches latest changes, updates remote refspec for full branch discovery, unshallows if needed, checks out the target branch, and hard-resets to `origin/<branch>`.
-   - Repos persist at `PROJECTS_DIR` (default: `~/.dropdeploy/projects/`) across deployments for faster subsequent builds.
+```mermaid
+flowchart TD
+    A{Repo exists locally?}
+    A -->|No| B[git clone URL -b branch]
+    A -->|Yes| C[git fetch origin]
+    C --> D[Update refspec for full branch discovery]
+    D --> E{Shallow clone?}
+    E -->|Yes| F[git fetch --unshallow]
+    E -->|No| G[git checkout branch]
+    F --> G
+    G --> H[git reset --hard origin/branch]
+    B --> I[Repo ready]
+    H --> I
+```
 
----
+- **First deploy:** Clones into `PROJECTS_DIR/<slug>/` (default: `~/.dropdeploy/projects/`).
+- **Subsequent deploys:** Fetches latest, switches branch if needed, hard-resets to `origin/<branch>`.
+- Repos persist across deployments for faster subsequent builds.
 
-### Step 5: Select the Dockerfile template
+### Step 5: Select Dockerfile template
 
 **File:** `src/services/docker/dockerfile.templates.ts`
 
-Updates `buildStep` to `BUILDING_IMAGE`.
+Updates `buildStep` to `BUILDING_IMAGE`. Based on `project.type`, one of four templates is used:
 
-Based on `project.type`, one of four Dockerfile templates is selected:
+| Type | Base Image | Internal Port | Strategy |
+|------|-----------|--------------|----------|
+| **STATIC** | `nginx:alpine` | 80 | Copy files into Nginx html directory |
+| **NODEJS** | `node:18-alpine` | 3000 | `npm install --omit=dev` + `npm start` |
+| **NEXTJS** | `node:18-alpine` | 3000 | Multi-stage build (builder + runner) |
+| **DJANGO** | `python:3.12-slim` | 8000 | `pip install -r requirements.txt` + `manage.py runserver` |
 
-#### STATIC (Nginx)
-```dockerfile
-FROM nginx:alpine
-COPY . /usr/share/nginx/html
-EXPOSE 80
-CMD ["nginx", "-g", "daemon off;"]
-```
-Copies the project files into Nginx and serves them on port 80.
+> **Note:** `nextjs-config-patcher.ts` adjusts Next.js config for standalone output when needed.
 
-#### NODEJS
-```dockerfile
-FROM node:18-alpine
-WORKDIR /app
-COPY package*.json ./
-RUN npm install --omit=dev
-COPY . .
-EXPOSE 3000
-CMD ["npm", "start"]
-```
-Installs production dependencies and runs `npm start` on port 3000.
-
-#### NEXTJS (multi-stage)
-```dockerfile
-FROM node:18-alpine AS builder
-WORKDIR /app
-COPY package*.json ./
-RUN npm ci
-COPY . .
-RUN npm run build
-
-FROM node:18-alpine AS runner
-WORKDIR /app
-COPY --from=builder /app/.next ./.next
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/package.json ./package.json
-EXPOSE 3000
-CMD ["npm", "start"]
-```
-Two-stage build: compiles the Next.js app in the builder stage, then copies
-only the build output to a clean runner image. Serves on port 3000.
-
-Note: `nextjs-config-patcher.ts` adjusts Next.js config for standalone output when needed.
-
-#### DJANGO
-```dockerfile
-FROM python:3.12-slim
-WORKDIR /app
-COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
-COPY . .
-EXPOSE 8000
-CMD ["python", "manage.py", "runserver", "0.0.0.0:8000"]
-```
-Installs Python dependencies from requirements.txt and runs the Django
-development server on port 8000.
-
----
-
-### Step 6: Build the Docker image
+### Step 6: Build Docker image
 
 **File:** `src/services/docker/docker.service.ts` -- `buildImage()`
 
-1. **Writes the Dockerfile** into the cloned repo directory.
-2. **Builds the image** via `dockerode`:
-   - Context: the cloned repo directory (all files).
-   - Tag: `dropdeploy/<project-slug>:latest`.
-3. **Follows the build stream** -- waits for Docker's build output and checks
-   for errors in each output chunk.
-4. **Verifies the image** -- calls `docker.getImage(imageName).inspect()` to
-   confirm it was actually created (Docker can report stream success but fail
-   to produce an image).
+1. Writes the Dockerfile into the cloned repo directory.
+2. Builds via `dockerode` with tag `dropdeploy/<slug>:latest`.
+3. Follows the build stream and checks for errors in each output chunk.
+4. Verifies the image exists via `docker.getImage(tag).inspect()`.
 
----
-
-### Step 7: Run the container
+### Step 7: Run container
 
 **File:** `src/services/docker/docker.service.ts` -- `runContainer()`
 
 Updates `buildStep` to `STARTING`.
 
-1. **Selects the container port**:
-   - Static projects: **80** (Nginx)
-   - Django: **8000**
-   - Node.js / Next.js: **3000**
-2. **Picks a host port** -- random port in range **8000--9999**.
-3. **Creates the container** with resource limits:
-   - Memory: **512 MB** hard limit
-   - CPU: **1024 shares** (default weight)
+1. Selects the internal container port based on project type (80 / 3000 / 8000).
+2. Picks a random **host port** in range **8000--9999**.
+3. Creates the container with resource limits:
+   - **Memory:** 512 MB hard limit
+   - **CPU:** 1024 shares (default weight)
    - Port binding: container port → random host port
-4. **Starts the container**.
-5. **Returns the host port** (e.g. `8472`).
+4. Starts the container.
 
----
-
-### Step 8: Finalize the deployment
+### Step 8: Finalize deployment
 
 Back in `buildAndDeploy()`:
 
-1. **Clear stale subdomains** -- if this project had a previous deployment
-   using the same subdomain, that old deployment's subdomain field is set to
-   `null` (the `subdomain` column has a unique constraint).
-2. **Update the deployment record**:
-   ```
-   status:        DEPLOYED
-   containerPort: 8472
-   subdomain:     my-app
-   completedAt:   <current timestamp>
-   buildStep:     null (cleared)
-   ```
-3. **Repo persists** -- the cloned repo directory at `PROJECTS_DIR/<slug>/`
-   is kept for faster subsequent deployments (no re-clone needed).
-
----
+1. Clears stale subdomains (previous deployment's subdomain set to `null` due to unique constraint).
+2. Updates the deployment record:
+   - `status: DEPLOYED`
+   - `containerPort: <assigned port>`
+   - `subdomain: <project-slug>`
+   - `completedAt: <timestamp>`
+   - `buildStep: null` (cleared)
 
 ### Step 9: Traffic routing
 
-An **Nginx reverse proxy** routes wildcard subdomain traffic to the right
-container:
+```mermaid
+graph LR
+    U["User Browser"] -->|"my-app.dropdeploy.app"| NG["Nginx Reverse Proxy"]
+    NG -->|"localhost:8472"| C["Docker Container"]
 
-```
-User request                  Nginx                         Docker
-───────────────────────────────────────────────────────────────────
-my-app.dropdeploy.app  ──▶  reverse proxy  ──▶  localhost:8472
-                             (subdomain lookup)      (container)
-```
-
-The deployed app is now accessible at:
-```
-https://my-app.dropdeploy.app
+    style U fill:#e0f2fe
+    style C fill:#dcfce7
 ```
 
-For local development, the UI also shows a **local network URL** using the
-host's detected IP address (e.g. `http://192.168.1.x:8472`), allowing other
-devices on the same network to access the deployed app.
+Nginx routes wildcard subdomain traffic to the correct container port. The app is accessible at `https://<slug>.dropdeploy.app`.
+
+For local development, the UI also shows a **local network URL** (e.g., `http://192.168.1.x:8472`) so other devices on the same network can access the deployed app.
 
 ---
 
-## 6. Interactive Terminal
+## 6. Build Progress Tracking
 
-After a container is deployed, users can execute commands inside it from the
-**Advanced** tab on the project detail page.
+Deployments track granular progress via the `buildStep` field:
 
-### How it works
+```mermaid
+stateDiagram-v2
+    [*] --> QUEUED
+    QUEUED --> CLONING: Worker picks up job
+    CLONING --> BUILDING_IMAGE: Repo ready
+    BUILDING_IMAGE --> STARTING: Image built
+    STARTING --> DEPLOYED: Container running
+    CLONING --> FAILED: Clone error
+    BUILDING_IMAGE --> FAILED: Build error
+    STARTING --> FAILED: Container error
+    FAILED --> [*]
+    DEPLOYED --> [*]
+```
 
-1. User types a command in the terminal UI (`src/components/features/terminal.tsx`).
-2. Frontend calls `POST /api/projects/:id/terminal` with `{ command }`.
-3. `DockerTerminalService` resolves the container (by name or image) and runs
-   the command via Docker exec.
-4. Returns `{ stdout, stderr, exitCode }` to the UI.
+**Frontend indicators:**
+- Completed steps: checkmark
+- Active step: spinner
+- Pending steps: empty circle
 
-### Slash commands
+**Duration tracking:**
+- `startedAt` set when worker begins processing
+- `completedAt` set on success or failure
+- UI shows elapsed time during builds, total duration after completion
 
-Built-in slash commands provide quick access to container info:
+---
+
+## 7. Interactive Terminal
+
+After deployment, users can execute commands inside the container from the **Advanced** tab.
+
+```mermaid
+sequenceDiagram
+    actor U as User
+    participant T as Terminal UI
+    participant API as POST /terminal
+    participant DTS as DockerTerminalService
+    participant D as Docker Engine
+
+    U->>T: Type command
+    T->>API: { command: "ls -la" }
+    API->>DTS: executeCommand(projectId, "ls -la")
+    DTS->>DTS: Validate against allowlist
+    DTS->>D: docker exec (create + start)
+    D-->>DTS: Multiplexed stream
+    DTS->>DTS: Demux stdout/stderr
+    DTS-->>API: { stdout, stderr, exitCode }
+    API-->>T: Display output
+```
+
+### Slash Commands
 
 | Command | Description |
 |---------|-------------|
@@ -373,12 +371,11 @@ Built-in slash commands provide quick access to container info:
 
 ### Safety
 
-- Commands are validated against an **allowlist** of permitted tools (ls, cat,
-  pwd, echo, env, whoami, df, du, ps, npm, node, python, curl, etc.).
-- Each command has a **30-second timeout**.
+- Commands validated against an **allowlist** (ls, cat, pwd, echo, env, npm, node, python, curl, etc.).
+- **30-second timeout** per command.
 - Docker's multiplexed stdout/stderr stream is properly demuxed.
 
-### Terminal UI features
+### Terminal UI Features
 
 - Robbyrussell-style prompt (green/red arrow based on last exit code)
 - Command history navigation (arrow keys)
@@ -388,117 +385,91 @@ Built-in slash commands provide quick access to container info:
 
 ---
 
-## 7. Error Handling & Retries
+## 8. Error Handling & Retries
 
-### During deployment
+### Deployment Failures
 
-If any step in the pipeline fails (clone, build, or run):
+If any pipeline step fails (clone, build, or run):
 
-1. Deployment status is set to `FAILED`.
-2. `completedAt` timestamp is recorded.
-3. The error message is stored in the `logs` column.
-4. Common Docker errors are **normalized** to user-friendly messages. For
-   example, "no such image" becomes guidance about adding a `start` script.
+1. Status set to `FAILED`, `completedAt` recorded.
+2. Error message stored in the `logs` column.
+3. Common Docker errors **normalized** to user-friendly messages (e.g., "no such image" becomes guidance about adding a `start` script).
 
-### BullMQ retries
+### BullMQ Retry Strategy
 
-- Failed jobs are retried up to **3 times**.
-- Backoff: **exponential** starting at 2 seconds (2s → 4s → 8s).
-- After 3 failures, the job is marked as permanently failed.
+```mermaid
+graph LR
+    F1["Attempt 1 fails"] -->|2s backoff| F2["Attempt 2"]
+    F2 -->|4s backoff| F3["Attempt 3"]
+    F3 -->|8s backoff| F4["Attempt 4 (final)"]
+    F4 -->|still fails| PERM["Permanently failed"]
 
-### Redis unavailability
+    style PERM fill:#fee2e2
+```
 
-- If Redis is down when a deployment is created, the deployment record is
-  still written to PostgreSQL (status `QUEUED`).
-- The job is not enqueued, but a warning is logged.
-- The deployment can be retried when Redis comes back.
+- **3 retries** with exponential backoff starting at 2 seconds.
+- After all retries exhausted, the job is marked as permanently failed.
+
+### Redis Unavailability
+
+- Deployment record is still written to PostgreSQL (status: `QUEUED`).
+- Job is **not** enqueued — a warning is logged.
+- Can be retried when Redis recovers.
 
 ---
 
-## 8. Authentication & Authorization
+## 9. Authentication & Authorization
 
-### Authentication
+### Authentication Flow
 
-- **JWT-based** using the `jose` library (HS256 algorithm).
-- Token is stored in an `auth-token` httpOnly, secure cookie (managed by `lib/auth-cookie.ts`).
-- **Middleware** (`src/middleware.ts`) intercepts requests to `/dashboard`
-  routes and verifies the JWT.
-- Session endpoint (`GET /api/auth/session`) validates the current token.
-- Logout (`POST /api/auth/logout`) clears the auth cookie.
+```mermaid
+flowchart LR
+    subgraph Registration
+        R1[Email + Password] --> R2[Zod Validate]
+        R2 --> R3[bcrypt Hash]
+        R3 --> R4[Store in DB]
+        R4 --> R5[Sign JWT]
+        R5 --> R6[Set httpOnly Cookie]
+    end
+
+    subgraph "Every Request"
+        E1[Cookie sent] --> E2[Middleware extracts JWT]
+        E2 --> E3[jose.verify]
+        E3 -->|Valid| E4["getSession() → { userId }"]
+        E3 -->|Invalid| E5[Redirect to /login]
+    end
+```
+
+- **JWT-based** using `jose` (HS256 algorithm).
+- Token stored in `auth-token` httpOnly, secure cookie.
+- **Middleware** (`src/middleware.ts`) protects `/dashboard/*` routes.
+- Session endpoint: `GET /api/auth/session`.
+- Logout: `POST /api/auth/logout` clears the cookie.
 
 ### Authorization
 
-- Every API route calls `getSession(req)` (from `lib/get-session.ts`) to extract `userId` from the JWT.
-- Services verify **ownership** before allowing actions:
-  - `project.userId === session.userId` for project operations.
-  - `deployment.project.userId === session.userId` for deployment operations.
-- Unauthorized access returns a `404 Not Found` (not `403`) to avoid leaking
-  resource existence.
+- Every API route calls `getSession(req)` to extract `userId`.
+- Services verify **ownership**: `resource.userId === session.userId`.
+- Unauthorized access returns **404** (not 403) to avoid leaking resource existence.
 
 ---
 
-## 9. Build Progress Tracking
+## 10. API Reference
 
-Deployments now track granular build progress via the `buildStep` field:
-
-```
-QUEUED → CLONING → BUILDING_IMAGE → STARTING → DEPLOYED
-                                              → FAILED
-```
-
-The frontend displays these steps with visual indicators:
-- Completed steps show a checkmark
-- The active step shows a spinner
-- Pending steps show an empty circle
-
-Duration tracking:
-- `startedAt` is set when the worker begins processing.
-- `completedAt` is set on success or failure.
-- The UI shows elapsed time during builds and total duration after completion.
-
----
-
-## 10. Visual Summary
-
-```
- User clicks "Deploy"
-       │
-       ▼
- POST /api/projects/:id/deploy
-       │
-       ▼
- ┌──────────────────────────────┐
- │  DeploymentService           │
- │  1. Verify project ownership │
- │  2. INSERT deployment        │──▶ PostgreSQL  (status: QUEUED)
- │  3. Enqueue job              │──▶ Redis / BullMQ
- └──────────────────────────────┘
-       │
-       ▼  (async, separate process)
- ┌──────────────────────────────────┐
- │  Worker (concurrency: 5)         │
- │  buildAndDeploy()                │
- │                                  │
- │  4. status → BUILDING            │──▶ PostgreSQL
- │     startedAt → now              │
- │  5. buildStep → CLONING          │
- │     git clone/pull (with branch) │──▶ PROJECTS_DIR/<slug>/
- │  6. buildStep → BUILDING_IMAGE   │
- │     Select Dockerfile + build    │──▶ dropdeploy/my-app:latest
- │  7. buildStep → STARTING         │
- │     docker run                   │──▶ container on port 8472
- │  8. status → DEPLOYED            │──▶ PostgreSQL (subdomain + port)
- │     completedAt → now            │
- └──────────────────────────────────┘
-       │
-       ▼
- Nginx reverse proxy
- my-app.dropdeploy.app → localhost:8472 → container
-       │
-       ▼
- Interactive terminal available
- POST /api/projects/:id/terminal → docker exec → stdout/stderr
-```
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/auth/register` | Create account |
+| `POST` | `/api/auth/login` | Login |
+| `POST` | `/api/auth/logout` | Logout (clear cookie) |
+| `GET` | `/api/auth/session` | Validate current session |
+| `GET` | `/api/projects` | List user's projects |
+| `POST` | `/api/projects` | Create project |
+| `GET` | `/api/projects/:id` | Get project details |
+| `PATCH` | `/api/projects/:id` | Update project |
+| `DELETE` | `/api/projects/:id` | Delete project |
+| `POST` | `/api/projects/:id/deploy` | Trigger deployment |
+| `POST` | `/api/projects/:id/terminal` | Execute container command |
+| `GET` | `/api/health` | Health check |
 
 ---
 
@@ -530,7 +501,7 @@ npm run dev            # Terminal 1: Next.js dev server
 npm run worker         # Terminal 2: BullMQ deployment worker
 ```
 
-### Key environment variables
+### Environment Variables
 
 | Variable | Example | Purpose |
 |----------|---------|---------|
@@ -541,16 +512,16 @@ npm run worker         # Terminal 2: BullMQ deployment worker
 | `BASE_DOMAIN` | `dropdeploy.app` | Subdomain base for deployed apps |
 | `DOCKER_SOCKET` | `/var/run/docker.sock` | Docker daemon socket |
 | `NEXT_PUBLIC_APP_URL` | `http://localhost:3000` | Frontend URL |
-| `PROJECTS_DIR` | `~/.dropdeploy/projects` | Where cloned repos are stored (default) |
-| `DOCKER_DATA_DIR` | `~/.dropdeploy/docker` | Where Docker data is stored (default) |
+| `PROJECTS_DIR` | `~/.dropdeploy/projects` | Cloned repo storage (default) |
+| `DOCKER_DATA_DIR` | `~/.dropdeploy/docker` | Docker data storage (default) |
 
 ---
 
-## 12. Tech Stack Summary
+## 12. Tech Stack
 
 | Layer | Technology |
 |-------|------------|
-| Frontend | Next.js 16, React 18, Tailwind CSS, shadcn/ui |
+| Frontend | Next.js 16 (App Router), React 18, Tailwind CSS, shadcn/ui |
 | Backend | Next.js API Routes, Prisma ORM |
 | Auth | bcryptjs, jose (JWT HS256) |
 | Queue | BullMQ + Redis |

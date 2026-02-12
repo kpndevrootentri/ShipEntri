@@ -1,27 +1,40 @@
 # DropDeploy
 
-Deploy projects instantly by **pasting a GitHub repository URL**. The system builds, deploys, and hosts your project and returns a publicly accessible URL.
+Deploy projects instantly by **pasting a GitHub repository URL**. The system clones, builds, containerizes, and hosts your project — returning a live subdomain URL.
+
+```mermaid
+graph LR
+    A["Paste GitHub URL"] --> B["DropDeploy"]
+    B --> C["Clone → Build → Deploy"]
+    C --> D["slug.dropdeploy.app"]
+
+    style B fill:#e0f2fe
+    style D fill:#dcfce7
+```
 
 ---
 
 ## Features
 
-- **GitHub deployment** – Deploy from a public repository URL (name, framework, optional description)
-- **Automatic project type detection** – Static (HTML), Node.js, or Next.js based on file presence
-- **Containerized build & runtime** – Each deployment runs in an isolated Docker container
-- **Live deployment URL** – Subdomain per project (e.g. `https://{slug}.dropdeploy.app`)
-- **Build status & logs** – Real-time build progress and persisted logs
-- **Authentication** – Email/password sign up and login with JWT sessions
+- **GitHub deployment** -- Deploy from any public repository URL
+- **Framework detection** -- Static (HTML), Node.js, Next.js, Django
+- **Containerized builds** -- Each deployment runs in an isolated Docker container
+- **Live URLs** -- Subdomain per project (`https://{slug}.dropdeploy.app`)
+- **Branch switching** -- Choose which branch to deploy, switch between deploys
+- **Build progress** -- Step-by-step indicators (cloning → building → starting)
+- **Interactive terminal** -- Run commands inside deployed containers with slash commands
+- **Local network access** -- Access deployed apps from other devices on your network
+- **Authentication** -- Email/password with JWT sessions
 
 ---
 
 ## Tech Stack
 
 | Layer | Technologies |
-|-------|---------------|
-| **Frontend** | Next.js (App Router), React, shadcn/ui, Tailwind CSS |
+|-------|-------------|
+| **Frontend** | Next.js 16 (App Router), React, shadcn/ui, Tailwind CSS |
 | **Backend** | Next.js API Routes, Prisma ORM, PostgreSQL, Redis, BullMQ |
-| **Infrastructure** | Docker, Nginx (reverse proxy) |
+| **Infrastructure** | Docker (dockerode), Nginx (reverse proxy), simple-git |
 
 ---
 
@@ -30,7 +43,7 @@ Deploy projects instantly by **pasting a GitHub repository URL**. The system bui
 - **Node.js** 18+
 - **PostgreSQL** (local or remote)
 - **Redis** (for BullMQ job queue)
-- **Docker** (optional for MVP; required for full build/deploy)
+- **Docker** daemon running
 
 ---
 
@@ -46,66 +59,76 @@ npm install
 
 ### 2. Environment variables
 
-Copy the example env file and set your values:
-
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env` and configure at least:
+Edit `.env` and configure:
 
 | Variable | Description |
 |----------|-------------|
-| `DATABASE_URL` | PostgreSQL connection string (e.g. `postgresql://user:password@localhost:5432/dropdeploy`) |
-| `JWT_SECRET` | Secret for JWT signing (min 32 chars recommended for production) |
+| `DATABASE_URL` | PostgreSQL connection string |
+| `JWT_SECRET` | Secret for JWT signing (32+ chars recommended) |
 | `REDIS_HOST` / `REDIS_PORT` | Redis connection (defaults: `localhost`, `6379`) |
 
 See [.env.example](.env.example) for all options.
 
 ### 3. Database setup
 
-Create the database (if it doesn’t exist), then apply the schema:
-
 ```bash
-# Create DB (example; use your DB user)
+# Create DB (if it doesn't exist)
 createdb dropdeploy
 
-# If your DB user needs schema permissions (e.g. "permission denied for schema public"):
+# If your DB user needs schema permissions:
 psql -d dropdeploy -f scripts/fix-db-permissions.sql
 
-# Apply Prisma schema
+# Apply schema and generate client
 npx prisma generate
 npx prisma db push
 ```
 
-For migrations instead of push:
-
-```bash
-npx prisma migrate dev
-```
-
 ### 4. Run the app
 
-**Development:**
+**Development** (two terminals):
 
 ```bash
-npm run dev
+npm run dev      # Terminal 1: Next.js dev server
+npm run worker   # Terminal 2: BullMQ deployment worker
 ```
 
-Open [http://localhost:3000](http://localhost:3000). Sign up or log in to access the dashboard.
+Open [http://localhost:3000](http://localhost:3000). Sign up to access the dashboard.
 
-**Optional – deployment worker** (processes build jobs; requires Redis):
+**Production:**
 
 ```bash
-npm run worker
+npm run build && npm start
 ```
 
-**Production build:**
+---
 
-```bash
-npm run build
-npm start
+## How It Works
+
+```mermaid
+sequenceDiagram
+    actor U as User
+    participant App as Next.js App
+    participant Q as BullMQ Queue
+    participant W as Worker
+    participant D as Docker
+
+    U->>App: Click "Deploy"
+    App->>Q: Enqueue job (QUEUED)
+    Q->>W: Process job
+    W->>D: Clone → Build Image → Run Container
+    D-->>W: Container on port 8472
+    W->>App: Status: DEPLOYED
+    App-->>U: Live at slug.dropdeploy.app
 ```
+
+1. **Create project** -- Provide a name, GitHub URL, and framework type.
+2. **Deploy** -- Click "Deploy" to queue a build job.
+3. **Worker builds** -- The BullMQ worker clones the repo, builds a Docker image, and starts a container.
+4. **Live URL** -- Access your app at `https://{slug}.dropdeploy.app` or via local network URL.
 
 ---
 
@@ -131,19 +154,19 @@ npm start
 ```
 dropDeploy/
 ├── src/
-│   ├── app/              # Next.js App Router (auth, dashboard, api)
-│   ├── components/       # UI (shadcn), features, layouts
-│   ├── lib/              # Utils, Prisma, Redis, queue, auth-cookie
+│   ├── app/              # Next.js App Router (auth, dashboard, API routes)
+│   ├── components/       # UI primitives (shadcn), features, layouts
+│   ├── hooks/            # Custom React hooks
+│   ├── lib/              # Utils, Prisma, Redis, queue, auth, config
 │   ├── repositories/     # Data access (User, Project, Deployment)
-│   ├── services/         # Business logic (auth, project, deployment, docker)
-│   ├── types/            # Shared TypeScript types
+│   ├── services/         # Business logic (auth, project, deployment, docker, git)
+│   ├── types/            # TypeScript types & DTOs
 │   ├── validators/       # Zod schemas
 │   └── workers/          # BullMQ deployment worker
-├── prisma/
-│   └── schema.prisma    # Database schema
-├── docker/              # Nginx configs, Dockerfile templates
-├── scripts/             # Dev setup, DB permissions
-└── docs/                # PRD, architecture
+├── prisma/               # Database schema
+├── docker/               # Nginx configs, Dockerfile templates
+├── scripts/              # Dev setup, DB permissions
+└── docs/                 # Documentation
 ```
 
 For a detailed breakdown, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
@@ -155,31 +178,28 @@ For a detailed breakdown, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `DATABASE_URL` | Yes | PostgreSQL connection string |
-| `JWT_SECRET` | Yes (auth) | Secret for JWT; use a long random string in production |
-| `JWT_EXPIRES_IN` | No | Token expiry (e.g. `7d`); default `7d` |
-| `REDIS_HOST` | No | Redis host; default `localhost` |
-| `REDIS_PORT` | No | Redis port; default `6379` |
+| `JWT_SECRET` | Yes | Secret for JWT signing |
+| `JWT_EXPIRES_IN` | No | Token expiry (default: `7d`) |
+| `REDIS_HOST` | No | Redis host (default: `localhost`) |
+| `REDIS_PORT` | No | Redis port (default: `6379`) |
 | `NEXT_PUBLIC_APP_URL` | No | Public app URL for links |
-| `BASE_DOMAIN` | No | Base domain for deployment URLs |
-| `DOCKER_SOCKET` | No | Docker socket path (for build/deploy) |
+| `BASE_DOMAIN` | No | Base domain for deployment subdomain URLs |
+| `DOCKER_SOCKET` | No | Docker socket path |
 | `NGINX_CONFIG_PATH` | No | Nginx config path for subdomain routing |
-
----
-
-## What happens after you add a project
-
-1. **Create project** – You provide a name, GitHub repo URL, and framework. A project and (on Deploy) a deployment record are created (status `QUEUED`).
-2. **Deploy** – Click “Deploy to get link” on a project tile. A job is added to BullMQ (requires Redis). If Redis is not running, the deployment is still created; start Redis and the worker to process it later.
-3. **Worker** – Run `npm run worker` (with Redis running). The worker picks up jobs and runs the build step.
-4. **Build & live URL** – The Docker build/run step is not implemented yet. See **[docs/NEXT-STEPS.md](docs/NEXT-STEPS.md)** for what to implement next (DockerService + `buildAndDeploy`) to get a live URL.
+| `PROJECTS_DIR` | No | Cloned repo storage (default: `~/.dropdeploy/projects`) |
+| `DOCKER_DATA_DIR` | No | Docker data storage (default: `~/.dropdeploy/docker`) |
 
 ---
 
 ## Documentation
 
-- **[docs/PRD.md](docs/PRD.md)** – Product requirements, user stories, and functional specs
-- **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** – Layered architecture and folder structure
-- **[docs/NEXT-STEPS.md](docs/NEXT-STEPS.md)** – What happens after you add a project and what to implement next
+| Document | Description |
+|----------|-------------|
+| [docs/PRD.md](docs/PRD.md) | Product requirements, user stories, and functional specs |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Layered architecture, folder structure, and conventions |
+| [docs/HOW-IT-WORKS.md](docs/HOW-IT-WORKS.md) | End-to-end system behavior with deployment pipeline details |
+| [docs/TODO.md](docs/TODO.md) | Improvement roadmap organized by priority |
+| [docs/learn.md](docs/learn.md) | Step-by-step codebase learning guide (~4-5 hours) |
 
 ---
 

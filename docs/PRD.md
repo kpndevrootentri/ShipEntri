@@ -1,34 +1,41 @@
 # Product Requirements Document (PRD)
 
-## Product Name
-**DropDeploy** (working name)
+**Product:** DropDeploy
 
 ---
 
 ## 1. Objective
 
-Build a web platform that allows users to **deploy projects instantly** by:
-- Drag & dropping a project directory
-- OR providing a GitHub repository URL
+Build a web platform that allows users to **deploy projects instantly** by pasting a GitHub repository URL. The system automatically builds, deploys, and hosts the project, returning a **publicly accessible URL**.
 
-The system automatically builds, deploys, and hosts the project, returning a **publicly accessible URL**.
+```mermaid
+graph LR
+    A["Developer"] -->|Paste GitHub URL| B["DropDeploy"]
+    B -->|Clone + Build + Deploy| C["Live URL"]
+    C -->|"slug.dropdeploy.app"| D["Users"]
+
+    style B fill:#e0f2fe
+    style C fill:#dcfce7
+```
 
 ---
 
 ## 2. Goals & Non-Goals
 
 ### Goals (MVP)
-- GitHub repo deployment
-- Automatic project type detection
-- Containerized build and runtime
-- Live deployment URL
+
+- GitHub repo deployment via URL
+- Automatic project type detection (Static, Node.js, Next.js, Django)
+- Containerized build and runtime (Docker)
+- Live deployment URL via subdomain
 - Build status tracking with step-by-step progress
 - Configurable deploy branch per project
 - Interactive terminal for deployed containers
 - Local network access URLs
 - Secure execution environment
 
-### Non-Goals (Out of Scope for MVP)
+### Non-Goals (Out of Scope)
+
 - Custom domains
 - Billing & subscriptions
 - Autoscaling
@@ -39,10 +46,12 @@ The system automatically builds, deploys, and hosts the project, returning a **p
 
 ## 3. Target Users
 
-- Frontend developers
-- Students & learners
-- Hackathon participants
-- Internal demo / QA teams
+| Audience | Use Case |
+|----------|----------|
+| **Frontend developers** | Quick deploy for prototypes and side projects |
+| **Students & learners** | Deploy class projects and learning exercises |
+| **Hackathon participants** | Rapid deployment during time-constrained events |
+| **Internal/QA teams** | Preview builds for review and testing |
 
 ---
 
@@ -58,7 +67,7 @@ As a user, I want to see build progress with step-by-step indicators (cloning, b
 As a user, I want a stable URL to access my deployed project, plus a local network URL for testing on other devices.
 
 ### US-4: Choose Deploy Branch
-As a user, I want to select which git branch to deploy, and switch branches on subsequent deploys.
+As a user, I want to select which git branch to deploy and switch branches between deploys.
 
 ### US-5: Container Terminal
 As a user, I want to run commands inside my deployed container to debug issues, view logs, and inspect the environment.
@@ -68,84 +77,67 @@ As a user, I want to run commands inside my deployed container to debug issues, 
 ## 5. Functional Requirements
 
 ### 5.1 Authentication
+
 - Email & password authentication (MVP)
 - JWT-based sessions stored in httpOnly cookies
-- Session validation endpoint
-- Logout endpoint
+- Session validation and logout endpoints
 - One user can manage multiple projects
-
----
 
 ### 5.2 Project Creation
 
-#### Upload Mode
-- Drag & drop folder upload (client-side zip)
-- Max upload size: **100MB**
-- Basic structure validation
-
-#### GitHub Mode
-- Public repositories only
+**GitHub Mode:**
+- Public repositories only (MVP)
 - Clone via HTTPS
 - Validate repository availability
 - Configurable deploy branch (default: `main`)
 
----
+**Upload Mode** (future):
+- Drag & drop folder upload (client-side zip)
+- Max upload size: 100 MB
+- Basic structure validation
 
 ### 5.3 Project Type Detection
 
-Project type is detected based on file presence:
-
-| File | Project Type |
-|----|---|
+| Detected File | Project Type |
+|--------------|-------------|
 | `index.html` | Static Site |
 | `package.json` | Node.js |
 | `next.config.js` | Next.js |
 | `requirements.txt` + `manage.py` | Django |
 
----
-
 ### 5.4 Build & Deployment
 
 - Each deployment runs in an **isolated Docker container**
 - Dockerfile generated dynamically based on project type
-- Build image → run container
-- Assign random available port (8000--9999)
-- Map project to subdomain
-- Repos persist locally for faster subsequent deployments (clone-once strategy)
+- Build image → run container → assign port
+- Random available host port (8000--9999)
+- Map project slug to subdomain
+- Clone-once strategy: repos persist locally for faster rebuilds
 - Branch switching supported between deploys
-
----
 
 ### 5.5 Deployment Status
 
-Supported statuses:
-- `QUEUED`
-- `BUILDING`
-- `DEPLOYED`
-- `FAILED`
+```mermaid
+stateDiagram-v2
+    [*] --> QUEUED: Deploy triggered
+    QUEUED --> BUILDING: Worker starts
+    BUILDING --> DEPLOYED: Success
+    BUILDING --> FAILED: Error
+    FAILED --> [*]
+    DEPLOYED --> [*]
+```
 
-Build step tracking:
-- `CLONING` -- Cloning or updating the repository
-- `BUILDING_IMAGE` -- Building the Docker image
-- `STARTING` -- Starting the container
+**Build steps:** `CLONING` → `BUILDING_IMAGE` → `STARTING`
 
-Timing:
-- `startedAt` -- When the build worker begins processing
-- `completedAt` -- When the deployment succeeds or fails
+**Timing:** `startedAt` (worker begins) and `completedAt` (success or failure)
 
-Logs:
-- Capture build & error logs
-- Persist logs in the deployment record
-
----
+**Logs:** Build & error logs persisted in the deployment record.
 
 ### 5.6 URL Management
 
-- Auto-generated subdomain per project: `https://{project-slug}.dropdeploy.app`
+- Auto-generated subdomain: `https://{slug}.dropdeploy.app`
 - Nginx routes subdomain traffic to the correct container port
-- Local network URL displayed for same-network device access: `http://<local-ip>:<port>`
-
----
+- Local network URL: `http://<local-ip>:<port>` for same-network access
 
 ### 5.7 Branch Management
 
@@ -154,13 +146,11 @@ Logs:
 - Redeploying after a branch change checks out the new branch
 - Git service handles shallow/unshallow conversion for branch discovery
 
----
-
 ### 5.8 Interactive Terminal
 
 - Execute shell commands inside deployed containers
-- Built-in slash commands for common operations (`/show-logs`, `/tail-logs`, `/env`, `/files`, `/help`)
-- Command allowlist for safety (ls, cat, pwd, echo, env, npm, node, python, curl, etc.)
+- Built-in slash commands: `/show-logs`, `/tail-logs`, `/env`, `/files`, `/help`
+- Command allowlist for safety
 - 30-second timeout per command
 - Terminal UI with command history, autocomplete, and resizable output
 
@@ -169,40 +159,56 @@ Logs:
 ## 6. Non-Functional Requirements
 
 ### Performance
+
 - Deployment start time < 10 seconds
 - Static site deployment < 30 seconds
 - Subsequent deploys faster due to persistent repo clones
 
 ### Security
-- Docker sandboxing
+
+- Docker sandboxing with resource limits (512 MB memory, CPU shares)
 - Non-root containers
-- CPU & memory limits
 - Terminal command allowlist
-- No host filesystem access (containers use configurable data directories)
+- No host filesystem access from containers
 
 ### Reliability
+
 - Build failures must not impact other deployments
-- Retry-safe deployment jobs
+- Retry-safe deployment jobs (3 retries, exponential backoff)
 - Graceful degradation when Redis is unavailable
 
 ---
 
 ## 7. Tech Stack
 
-### Frontend
-- Next.js 16 (App Router)
-- React
-- Tailwind CSS + shadcn/ui
-- React Dropzone
+```mermaid
+graph TB
+    subgraph Frontend
+        NJS[Next.js 16 — App Router]
+        REACT[React]
+        TW[Tailwind CSS + shadcn/ui]
+    end
 
-### Backend
-- Next.js API Routes
-- Prisma ORM
-- PostgreSQL
-- Redis + BullMQ (job queue)
+    subgraph Backend
+        API[Next.js API Routes]
+        PRISMA[Prisma ORM]
+        PG[(PostgreSQL)]
+        BULL[BullMQ]
+        RD[(Redis)]
+    end
 
-### Infrastructure
-- Docker (dockerode)
-- Nginx (Reverse Proxy)
-- simple-git
-- Single VPS (MVP)
+    subgraph Infrastructure
+        DOCKER[Docker — dockerode]
+        NGINX[Nginx — Reverse Proxy]
+        GIT[simple-git]
+    end
+
+    Frontend --> Backend
+    Backend --> Infrastructure
+```
+
+| Layer | Technologies |
+|-------|-------------|
+| **Frontend** | Next.js 16 (App Router), React, Tailwind CSS, shadcn/ui |
+| **Backend** | Next.js API Routes, Prisma ORM, PostgreSQL, BullMQ + Redis |
+| **Infrastructure** | Docker (dockerode), Nginx, simple-git, single VPS (MVP) |
