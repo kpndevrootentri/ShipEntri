@@ -27,6 +27,7 @@ model User {
   projects      Project[]
   auditLogs     AuditLog[]
   gitProviders  GitProvider[]
+  projectAccess ProjectAccess[]
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -54,12 +55,39 @@ model Project {
   auditLogs            AuditLog[]
   showcase             ProjectShowcase?
   proxyHits            ProxyHit[]
+  accessList           ProjectAccess[]
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
   @@index([userId])
   @@map("projects")
+}
+
+enum AccessKind {
+  USER
+  DOMAIN
+}
+
+// Per-project access list for PRIVATE deployments.
+// An entry is either a specific USER (by userId) or a whole email DOMAIN.
+// The proxy authorizes a request if the viewer is the owner, matches a USER
+// entry, or their email matches a DOMAIN entry.
+model ProjectAccess {
+  id        String     @id @default(cuid())
+  projectId String     @map("project_id")
+  kind      AccessKind
+  userId    String?    @map("user_id") // set when kind = USER
+  domain    String? // set when kind = DOMAIN, e.g. "entri.me"
+  createdAt DateTime   @default(now()) @map("created_at")
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user    User?   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, userId])
+  @@unique([projectId, domain])
+  @@index([projectId])
+  @@map("project_access")
 }
 
 model ProjectShowcase {

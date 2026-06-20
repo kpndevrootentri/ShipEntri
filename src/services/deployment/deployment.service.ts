@@ -14,6 +14,7 @@ import { createLogger } from '@/lib/logger';
 import { scanPackages } from './package-scanner';
 import { detectFromFiles } from '@/lib/type-detector';
 import { NotFoundError, ConflictError, ValidationError } from '@/lib/errors';
+import { parseSafeRepoUrl } from '@/lib/git-url';
 import type { Deployment } from '@prisma/client';
 
 const log = createLogger('deployment-service');
@@ -468,9 +469,16 @@ export class DeploymentService {
  * GitHub: https://x-access-token:<token>@github.com/owner/repo.git
  * GitLab: https://oauth2:<token>@gitlab.com/owner/repo.git
  * The token is NEVER stored — only used in-memory during clone/pull.
+ *
+ * Re-validates the URL against the host allowlist before injecting the token
+ * (defense in depth): even if a malformed URL reached the DB, we never embed a
+ * credential into a non-allowlisted host or a dangerous git transport.
  */
 function buildAuthUrl(repoUrl: string, source: string, token: string): string {
-  const url = new URL(repoUrl.endsWith('.git') ? repoUrl : `${repoUrl}.git`);
+  const { url } = parseSafeRepoUrl(repoUrl);
+  if (!url.pathname.endsWith('.git')) {
+    url.pathname = `${url.pathname.replace(/\/+$/, '')}.git`;
+  }
   url.username = source === 'GITHUB' ? 'x-access-token' : 'oauth2';
   url.password = token;
   return url.toString();

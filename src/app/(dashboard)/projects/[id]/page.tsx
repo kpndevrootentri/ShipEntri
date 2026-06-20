@@ -16,6 +16,7 @@ import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 import { ProjectTerminal } from '@/components/features/terminal';
 import { EnvVarsPanel } from '@/components/features/env-vars-panel';
+import { AccessListPanel } from '@/components/features/access-list-panel';
 import { getLocalIP } from '@/lib/local-ip';
 import {
   ArrowLeft,
@@ -1280,8 +1281,8 @@ function SettingsPanel({
         <CardHeader>
           <CardTitle className="text-base">URL Privacy</CardTitle>
           <CardDescription>
-            When enabled, only users signed in with an <strong>@entri.me</strong> account can access the deployed URL.
-            Public URLs remain accessible to everyone.
+            When enabled, only the owner and people you grant access to can open the deployed URL.
+            Manage who has access below. Public URLs remain accessible to everyone.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -1291,7 +1292,7 @@ function SettingsPanel({
               <div>
                 <p className="text-sm font-medium">Private URL</p>
                 <p className="text-xs text-muted-foreground">
-                  {isPrivate ? 'Only @entri.me users can access this URL' : 'Anyone with the link can access this URL'}
+                  {isPrivate ? 'Only the owner and granted users can access this URL' : 'Anyone with the link can access this URL'}
                 </p>
               </div>
             </div>
@@ -1319,6 +1320,9 @@ function SettingsPanel({
           )}
         </CardContent>
       </Card>
+
+      {/* Access list — only relevant while the URL is private */}
+      {isPrivate && <AccessListPanel projectId={project.id} />}
 
       {/* Danger Zone */}
       <Card className="border-destructive/50">

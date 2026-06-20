@@ -5,6 +5,7 @@ import * as fs from 'fs';
 import * as nodePath from 'path';
 import { AUTH_COOKIE_NAME } from '@/lib/auth-cookie';
 import { getConfig } from '@/lib/config';
+import { projectAccessService } from '@/services/project-access';
 
 export const dynamic = 'force-dynamic';
 
@@ -97,8 +98,6 @@ async function serveStaticFile(serveDir: string, requestPath: string, slug?: str
     });
   } catch { return null; }
 }
-
-const ENTRI_DOMAIN = '@entri.me';
 
 function detectDevice(ua: string): 'mobile' | 'desktop' | 'bot' | 'unknown' {
   if (!ua) return 'unknown';
@@ -315,7 +314,7 @@ async function handler(
       containerPort: true,
       servingMethod: true,
       projectId: true,
-      project: { select: { isPrivate: true } },
+      project: { select: { id: true, isPrivate: true, userId: true } },
     },
   });
 
@@ -327,6 +326,9 @@ async function handler(
   }
 
   // ── Private URL gate ─────────────────────────────────────────────────────
+  // Authorize the project owner, anyone on the per-project access list (specific
+  // user or allowed email domain), and platform admins (CONTRIBUTOR). A logged-in
+  // user who is none of these is denied — being authenticated is not enough.
   if (deployment.project.isPrivate) {
     const token = request.cookies.get(AUTH_COOKIE_NAME)?.value;
     let authorized = false;
@@ -340,8 +342,15 @@ async function handler(
             new TextEncoder().encode(secret),
             { algorithms: ['HS256'] }
           );
+          const userId = payload.sub as string | undefined;
           const email = payload.email as string | undefined;
-          authorized = !!email && email.endsWith(ENTRI_DOMAIN);
+          const role = (payload.role as string | undefined) ?? 'USER';
+          if (userId && email) {
+            authorized = await projectAccessService.canView(
+              { id: deployment.project.id, userId: deployment.project.userId },
+              { userId, email, role },
+            );
+          }
         }
       } catch {
         // Expired or tampered token — treat as unauthenticated
