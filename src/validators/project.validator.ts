@@ -51,6 +51,7 @@ export const updateProjectSchema = z.object({
   branch: branchSchema.optional(),
   isPrivate: z.boolean().optional(),
   useStaticHosting: z.boolean().optional(),
+  autoDeploy: z.boolean().optional(),
 });
 
 export type CreateProjectDto = z.infer<typeof createProjectSchema>;

@@ -64,6 +64,18 @@ export function parseSafeRepoUrl(raw: string): ParsedRepoUrl {
   return { url, host: host.replace(/^www\./, '') };
 }
 
+/**
+ * Returns the normalised "owner/repo" path for a validated repo URL, lowercased
+ * and without a trailing ".git". Used to match an incoming webhook's
+ * `repository.full_name` against a project's stored `githubUrl`.
+ * Throws {@link ValidationError} (via {@link parseSafeRepoUrl}) on an unsafe URL.
+ */
+export function repoFullNameFromUrl(raw: string): string {
+  const { url } = parseSafeRepoUrl(raw);
+  const [owner, repo] = url.pathname.split('/').filter(Boolean);
+  return `${owner}/${repo.replace(/\.git$/, '')}`.toLowerCase();
+}
+
 /** True when the URL host matches the declared source (github.com ↔ GITHUB, etc.). */
 export function hostMatchesSource(host: string, source: GitSource): boolean {
   const normalized = host.replace(/^www\./, '');

@@ -48,6 +48,25 @@ export class DeploymentService {
       throw new NotFoundError('Project');
     }
 
+    return this.enqueueDeployment(projectId);
+  }
+
+  /**
+   * Trigger a deployment from a verified GitHub webhook. There is no session, so
+   * ownership cannot be checked against a userId — the caller (webhook route) has
+   * already authenticated the request via the project's HMAC secret. The build
+   * path resolves the project owner's OAuth token from project.userId.
+   */
+  async createDeploymentFromWebhook(projectId: string): Promise<{ deployment: Deployment; queued: boolean }> {
+    const project = await this.projectRepo.findById(projectId);
+    if (!project) {
+      throw new NotFoundError('Project');
+    }
+    return this.enqueueDeployment(projectId);
+  }
+
+  /** Shared lock / supersede / smart-queue body for both trigger paths. */
+  private async enqueueDeployment(projectId: string): Promise<{ deployment: Deployment; queued: boolean }> {
     // Redis advisory lock — prevents race from double-click / concurrent API calls
     const redis = getRedisConnection();
     const lockKey = `deploy:lock:${projectId}`;

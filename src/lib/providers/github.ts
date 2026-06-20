@@ -113,3 +113,54 @@ export async function fetchGitHubRepos(accessToken: string, query: string, page:
     updatedAt: r.updated_at,
   }));
 }
+
+/**
+ * Register a push webhook on a repository. Requires the `repo` OAuth scope and
+ * admin rights on the repo. `fullName` is "owner/repo".
+ */
+export async function createGitHubHook(
+  accessToken: string,
+  fullName: string,
+  config: { url: string; secret: string },
+): Promise<{ id: number }> {
+  const res = await fetch(`${GITHUB_API_BASE_URL}/repos/${fullName}/hooks`, {
+    method: 'POST',
+    headers: { ...GITHUB_API_HEADERS, Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name: 'web',
+      active: true,
+      events: ['push'],
+      config: {
+        url: config.url,
+        content_type: 'json',
+        secret: config.secret,
+        insecure_ssl: '0',
+      },
+    }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`GitHub hook creation failed (${res.status}): ${text}`);
+  }
+  const data = await res.json() as { id: number };
+  return { id: data.id };
+}
+
+/**
+ * Delete a previously-registered webhook. A 404 is treated as success — the hook
+ * is already gone (e.g. removed manually on GitHub).
+ */
+export async function deleteGitHubHook(
+  accessToken: string,
+  fullName: string,
+  hookId: string,
+): Promise<void> {
+  const res = await fetch(`${GITHUB_API_BASE_URL}/repos/${fullName}/hooks/${hookId}`, {
+    method: 'DELETE',
+    headers: { ...GITHUB_API_HEADERS, Authorization: `Bearer ${accessToken}` },
+  });
+  if (!res.ok && res.status !== 404) {
+    const text = await res.text();
+    throw new Error(`GitHub hook deletion failed (${res.status}): ${text}`);
+  }
+}

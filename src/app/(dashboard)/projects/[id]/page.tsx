@@ -79,6 +79,7 @@ interface ProjectDetail {
   branch: string;
   isPrivate: boolean;
   useStaticHosting: boolean;
+  autoDeploy: boolean;
   createdAt: string;
   updatedAt: string;
   deployments: Deployment[];
@@ -1012,6 +1013,10 @@ function SettingsPanel({
   const [privacySaving, setPrivacySaving] = useState(false);
   const [privacyError, setPrivacyError] = useState<string | null>(null);
 
+  const [autoDeploy, setAutoDeploy] = useState(project.autoDeploy);
+  const [autoDeploySaving, setAutoDeploySaving] = useState(false);
+  const [autoDeployError, setAutoDeployError] = useState<string | null>(null);
+
   const [useStaticHosting, setUseStaticHosting] = useState(project.useStaticHosting);
 
   const [deleteConfirm, setDeleteConfirm] = useState('');
@@ -1025,7 +1030,8 @@ function SettingsPanel({
     setType(framework);
     setBranch(project.branch ?? 'main');
     setIsPrivate(project.isPrivate);
-  }, [project.id, project.name, project.description, project.branch, project.isPrivate, framework]);
+    setAutoDeploy(project.autoDeploy);
+  }, [project.id, project.name, project.description, project.branch, project.isPrivate, project.autoDeploy, framework]);
 
   const isStaticEligible = (STATIC_ELIGIBLE_TYPES as readonly string[]).includes(type);
   const isLockedStatic = (LOCKED_STATIC_TYPES as readonly string[]).includes(type);
@@ -1096,6 +1102,31 @@ function SettingsPanel({
       setPrivacyError('Something went wrong');
     } finally {
       setPrivacySaving(false);
+    }
+  };
+
+  const handleAutoDeployToggle = async (next: boolean): Promise<void> => {
+    setAutoDeployError(null);
+    setAutoDeploySaving(true);
+    setAutoDeploy(next);
+    try {
+      const res = await fetch(`/api/projects/${project.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ autoDeploy: next }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setAutoDeploy(!next); // revert on failure
+        setAutoDeployError(data?.error?.message ?? 'Failed to update');
+      } else {
+        onUpdated();
+      }
+    } catch {
+      setAutoDeploy(!next);
+      setAutoDeployError('Something went wrong');
+    } finally {
+      setAutoDeploySaving(false);
     }
   };
 
@@ -1275,6 +1306,55 @@ function SettingsPanel({
           </form>
         </CardContent>
       </Card>
+
+      {/* Auto-deploy on git push — GitHub projects only */}
+      {project.source === 'GITHUB' && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Auto-Deploy</CardTitle>
+            <CardDescription>
+              When enabled, every push to the <span className="font-medium">{project.branch}</span> branch
+              automatically triggers a new deployment. DropDeploy registers a webhook on your GitHub repository.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="flex items-center justify-between gap-4">
+              <div className="flex items-center gap-2">
+                <Zap className="h-4 w-4 text-muted-foreground" />
+                <div>
+                  <p className="text-sm font-medium">Deploy on push</p>
+                  <p className="text-xs text-muted-foreground">
+                    {autoDeploy
+                      ? `Pushes to ${project.branch} will deploy automatically`
+                      : 'Deployments are triggered manually'}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={autoDeploy}
+                disabled={autoDeploySaving}
+                onClick={() => { void handleAutoDeployToggle(!autoDeploy); }}
+                className={cn(
+                  'relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50',
+                  autoDeploy ? 'bg-primary' : 'bg-input'
+                )}
+              >
+                <span
+                  className={cn(
+                    'pointer-events-none block h-5 w-5 rounded-full bg-background shadow-lg ring-0 transition-transform',
+                    autoDeploy ? 'translate-x-5' : 'translate-x-0'
+                  )}
+                />
+              </button>
+            </div>
+            {autoDeployError && (
+              <p className="text-sm text-destructive mt-3" role="alert">{autoDeployError}</p>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* Privacy */}
       <Card>
