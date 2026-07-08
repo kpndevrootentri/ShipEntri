@@ -12,6 +12,12 @@ export interface IProjectRepository {
   update(id: string, data: UpdateProjectDto): Promise<Project>;
   delete(id: string): Promise<void>;
   transferOwner(id: string, newUserId: string): Promise<Project>;
+  /** Enable auto-deploy and persist the GitHub hook id + encrypted webhook secret. */
+  setWebhookConfig(id: string, data: { githubHookId: string; webhookSecretEnc: string; webhookSecretIv: string; webhookSecretTag: string }): Promise<Project>;
+  /** Disable auto-deploy and clear all webhook fields. */
+  clearWebhookConfig(id: string): Promise<Project>;
+  /** All auto-deploy-enabled GitHub projects on a given branch (webhook fan-out). */
+  findAutoDeployByBranch(branch: string): Promise<Project[]>;
 }
 
 export class ProjectRepository implements IProjectRepository {
@@ -81,6 +87,35 @@ export class ProjectRepository implements IProjectRepository {
 
   async transferOwner(id: string, newUserId: string): Promise<Project> {
     return prisma.project.update({ where: { id }, data: { userId: newUserId } });
+  }
+
+  async setWebhookConfig(
+    id: string,
+    data: { githubHookId: string; webhookSecretEnc: string; webhookSecretIv: string; webhookSecretTag: string },
+  ): Promise<Project> {
+    return prisma.project.update({
+      where: { id },
+      data: { autoDeploy: true, ...data },
+    });
+  }
+
+  async clearWebhookConfig(id: string): Promise<Project> {
+    return prisma.project.update({
+      where: { id },
+      data: {
+        autoDeploy: false,
+        githubHookId: null,
+        webhookSecretEnc: null,
+        webhookSecretIv: null,
+        webhookSecretTag: null,
+      },
+    });
+  }
+
+  async findAutoDeployByBranch(branch: string): Promise<Project[]> {
+    return prisma.project.findMany({
+      where: { autoDeploy: true, source: 'GITHUB', branch },
+    });
   }
 
   private async generateUniqueSlug(base: string): Promise<string> {

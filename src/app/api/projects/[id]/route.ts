@@ -1,10 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSession } from '@/lib/get-session';
 import { projectService } from '@/services/project';
+import { webhookService } from '@/services/webhook';
 import { handleApiError } from '@/lib/api-error';
 import { updateProjectSchema } from '@/validators/project.validator';
 import { ValidationError } from '@/lib/errors';
 import { auditLogRepository } from '@/repositories/audit-log.repository';
+import type { Project } from '@prisma/client';
 
 type RouteCtx = { params: Promise<{ id: string }> };
 
@@ -40,7 +42,20 @@ export async function PATCH(
     if (!parsed.success) {
       throw new ValidationError(parsed.error.errors[0]?.message ?? 'Invalid input');
     }
-    const project = await projectService.update(id, session.userId, parsed.data);
+
+    // autoDeploy has side effects (registers/removes a GitHub webhook), so it is
+    // handled by the webhook service rather than the generic field update.
+    const { autoDeploy, ...fields } = parsed.data;
+
+    let project: Project | undefined;
+    if (Object.keys(fields).length > 0) {
+      project = await projectService.update(id, session.userId, fields);
+    }
+    if (autoDeploy !== undefined) {
+      project = autoDeploy
+        ? await webhookService.enableAutoDeploy(id, session.userId)
+        : await webhookService.disableAutoDeploy(id, session.userId);
+    }
 
     // Non-blocking audit log
     auditLogRepository.create({
@@ -74,6 +89,9 @@ export async function DELETE(
       userId: session.userId,
       projectId: id,
     }).catch(() => {});
+
+    // Best-effort: remove the GitHub webhook so we don't orphan it on the remote.
+    await webhookService.disableAutoDeploy(id, session.userId).catch(() => {});
 
     await projectService.delete(id, session.userId);
     return NextResponse.json({ success: true });

@@ -47,6 +47,13 @@ model Project {
   isPrivate   Boolean    @default(false) @map("is_private")
   useStaticHosting Boolean @default(false) @map("use_static_hosting")
 
+  // Auto-deploy on git push (GitHub webhooks). Disabled by default.
+  autoDeploy       Boolean @default(false) @map("auto_deploy")
+  githubHookId     String? @map("github_hook_id")          // numeric hook id from GitHub, for deletion
+  webhookSecretEnc String? @db.Text @map("webhook_secret_enc")  // AES-256-GCM triplet (matches GitProvider)
+  webhookSecretIv  String? @map("webhook_secret_iv")
+  webhookSecretTag String? @map("webhook_secret_tag")
+
   userId String @map("user_id")
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 

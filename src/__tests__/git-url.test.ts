@@ -1,4 +1,4 @@
-import { parseSafeRepoUrl, hostMatchesSource } from '@/lib/git-url';
+import { parseSafeRepoUrl, hostMatchesSource, repoFullNameFromUrl } from '@/lib/git-url';
 import { ValidationError } from '@/lib/errors';
 
 describe('parseSafeRepoUrl', () => {
@@ -26,6 +26,17 @@ describe('parseSafeRepoUrl', () => {
     ['not a url', 'not-a-url'],
   ])('rejects %s', (_label, input) => {
     expect(() => parseSafeRepoUrl(input)).toThrow(ValidationError);
+  });
+});
+
+describe('repoFullNameFromUrl', () => {
+  it('returns lowercased owner/repo without .git', () => {
+    expect(repoFullNameFromUrl('https://github.com/Owner/Repo.git')).toBe('owner/repo');
+    expect(repoFullNameFromUrl('https://www.github.com/Owner/Repo')).toBe('owner/repo');
+  });
+
+  it('throws on an unsafe URL', () => {
+    expect(() => repoFullNameFromUrl('https://evil.example.com/o/r')).toThrow(ValidationError);
   });
 });
 
