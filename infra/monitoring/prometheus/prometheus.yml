@@ -1,0 +1,35 @@
+# Prometheus scrape configuration for DropDeploy
+# Used by Phase 2 (P1) — uncomment prometheus service in docker-compose.yml first.
+#
+# Retention: 7 days / 5 GB (set via CLI flags in docker-compose.yml)
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    instance: dropdeploy
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+alerting:
+  alertmanagers: []  # Grafana Alerting is used instead of AlertManager at this scale
+
+scrape_configs:
+  # ─── DropDeploy API custom metrics ──────────────────────────────────────────
+  # Requires prom-client in the Next.js app with /api/metrics endpoint.
+  # See Phase 2 implementation notes in docs.
+  - job_name: dropdeploy_api
+    static_configs:
+      # host.docker.internal does not resolve on Linux without extra_hosts.
+      # The Prometheus service has extra_hosts: host-gateway set in docker-compose.yml.
+      - targets: ['host.docker.internal:3001']
+    metrics_path: /api/metrics
+    scrape_interval: 10s
+
+  # ─── Host system metrics ─────────────────────────────────────────────────────
+  # Only if node-exporter is uncommented in docker-compose.yml.
+  # node-exporter uses network_mode: host, so it is reachable via host-gateway.
+  - job_name: node
+    static_configs:
+      - targets: ['host.docker.internal:9100']

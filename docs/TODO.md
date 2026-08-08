@@ -165,10 +165,10 @@ graph TD
 - [ ] Lazy-load deployment history and terminal output
 
 
-[] show quota availability for users
+[x] show quota availability for users
 [] dropdeploy monitor architecture with grafana etc..
 [x] plan the feature Drag and drop your project folder, zip file, or a single HTML file to deploy instantly.
-
+[] if any project have docker don't accept that make our on docker implementaiton only 
 ---
 
 ## Quick Wins

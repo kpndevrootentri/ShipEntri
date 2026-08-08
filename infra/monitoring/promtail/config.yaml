@@ -1,0 +1,44 @@
+# Promtail config (P2) — ships Docker container logs to Loki
+# Automatically adds container name + image labels for filtering in Grafana.
+
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  # Must be on a persistent volume — /tmp is cleared on restart causing Promtail
+  # to re-read all logs from offset 0 and push duplicates into Loki.
+  filename: /var/lib/promtail/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: docker_containers
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 5s
+    relabel_configs:
+      - source_labels: [__meta_docker_container_name]
+        regex: '/?(.*)'
+        target_label: container
+      - source_labels: [__meta_docker_container_image]
+        target_label: image
+      - source_labels: [__meta_docker_container_label_com_docker_compose_service]
+        target_label: service
+    pipeline_stages:
+      # Parse JSON logs (Winston in production mode emits JSON)
+      - json:
+          expressions:
+            level: level
+            message: message
+            correlation_id: correlation_id
+      - labels:
+          level:
+          correlation_id:
+      # Drop debug logs to reduce volume.
+      # Use source+expression to match the extracted 'level' field rather than
+      # a raw-text regex, which is fragile and depends on exact JSON formatting.
+      - drop:
+          source: level
+          expression: "debug"

@@ -1,0 +1,35 @@
+# Netdata Alert Notification Configuration
+# Docs: https://learn.netdata.cloud/docs/alerting/notifications/agent-dispatched-notifications/
+#
+# SETUP:
+# 1. Copy this file into the netdata container:
+#    docker cp monitoring/netdata/health_alarm_notify.conf netdata:/etc/netdata/health_alarm_notify.conf
+#    (The docker-compose bind-mount handles this automatically)
+# 2. Restart netdata: docker compose -f monitoring/docker-compose.yml restart netdata
+# 3. Test: docker exec netdata /usr/libexec/netdata/plugins.d/alarm-notify.sh test
+
+# ─── Slack ───────────────────────────────────────────────────────────────────
+# Create a Slack webhook at: https://api.slack.com/apps → Incoming Webhooks
+# Data goes directly from this container to Slack — nothing passes through Netdata servers.
+SEND_SLACK="YES"
+SLACK_WEBHOOK_URL="https://hooks.slack.com/services/REPLACE/WITH/YOUR_WEBHOOK"
+DEFAULT_RECIPIENT_SLACK="dropdeploy-ops"
+
+# ─── Email (alternative / additional) ────────────────────────────────────────
+# SEND_EMAIL="YES"
+# EMAIL_SENDER="netdata@yourdomain.com"
+# DEFAULT_RECIPIENT_EMAIL="you@yourdomain.com"
+
+# ─── Filtering: which alerts trigger notifications ────────────────────────────
+# CRITICAL = production-down severity (always notify)
+# WARNING  = degraded state (notify during business hours or always)
+# CLEAR    = recovery (always send so you know it's fixed)
+
+# Send warnings + critical + clears to Slack. Remove "warning" to only page on critical.
+SLACK_NOTIFY_CLEAR="YES"
+SLACK_NOTIFY_WARNING="YES"
+SLACK_NOTIFY_CRITICAL="YES"
+
+# Silence specific noisy alarms that don't matter for DropDeploy:
+# (comment out to re-enable)
+# SEND_SLACK_FOR_net_inbound_packets_dropped="NO"

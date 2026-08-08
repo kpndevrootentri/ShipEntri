@@ -1,0 +1,85 @@
+# DropDeploy alert rules for Prometheus / Grafana Alerting
+# Priority-ordered: Critical first, then Warning, then Info.
+
+groups:
+  - name: dropdeploy_critical
+    interval: 30s
+    rules:
+      - alert: WorkerDown
+        # absent() catches the case where prom-client is not yet initialised or
+        # the worker crashed before registering the metric — bare == 0 would
+        # never fire on a missing series.
+        expr: absent(dropdeploy_worker_alive) == 1 or dropdeploy_worker_alive == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "BullMQ worker is not responding"
+          description: "Worker heartbeat has been absent for >2 minutes. No deployments can be processed."
+
+      - alert: DeploymentFailureRateHigh
+        # dropdeploy_deployments_total is a Gauge (DB snapshot), not a Counter,
+        # so rate() is invalid. Instead compare the current FAILED snapshot count
+        # against all-time total — alerts when >30% of all deployments are FAILED.
+        expr: |
+          (
+            sum(dropdeploy_deployments_total{status="FAILED"})
+            /
+            sum(dropdeploy_deployments_total)
+          ) > 0.3
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Deployment failure rate above 30%"
+          description: "More than 30% of all deployments are in FAILED state."
+
+      - alert: DiskSpaceCritical
+        expr: (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) < 0.1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Disk space below 10%"
+          description: "Host disk is {{ $value | humanizePercentage }} full. Docker builds will fail."
+
+  - name: dropdeploy_warning
+    interval: 60s
+    rules:
+      - alert: QueueDepthHigh
+        expr: dropdeploy_queue_depth > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Deployment queue depth is high ({{ $value }} pending)"
+          description: "More than 10 deployments are queued and waiting. Worker may be stuck."
+
+      - alert: BuildTimeP95High
+        # dropdeploy_build_duration_p95_seconds is a pre-computed Gauge (not a
+        # Histogram), so histogram_quantile() is not applicable here.
+        expr: dropdeploy_build_duration_p95_seconds > 600
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "P95 build time exceeds 10 minutes"
+          description: "95th percentile build duration is above 600s. Builds may be hanging."
+
+      - alert: DiskSpaceWarning
+        expr: (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) < 0.2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Disk space below 20%"
+          description: "Host disk is {{ $value | humanizePercentage }} full. Plan for cleanup."
+
+      - alert: HighMemoryUsage
+        expr: (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) < 0.15
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Available RAM below 15%"
+          description: "Less than 15% RAM available. Container OOMs may follow."

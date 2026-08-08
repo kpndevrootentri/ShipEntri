@@ -1,0 +1,159 @@
+# DropDeploy Monitoring Stack
+# Phase 1 (P0): Netdata only — ~80 MB RAM, fully self-hosted
+# Phase 2 (P1): Uncomment prometheus + grafana blocks — ~+300 MB RAM
+# Phase 3 (P2): Uncomment loki + promtail blocks — ~+200 MB RAM
+#
+# Start: docker compose -f infra/monitoring/docker-compose.yml up -d
+# Stop:  docker compose -f infra/monitoring/docker-compose.yml down
+
+services:
+  # ─── P0: Netdata ────────────────────────────────────────────────────────────
+  # Auto-discovers Docker, Nginx, Redis, PostgreSQL — zero config required.
+  # Dashboard at http://localhost:19999 (proxied via Nginx — see nginx/monitoring.conf)
+  netdata:
+    image: netdata/netdata:stable
+    container_name: netdata
+    pid: host
+    network_mode: host
+    mem_limit: 128m
+    restart: unless-stopped
+    cap_add:
+      - SYS_PTRACE
+      - SYS_ADMIN    # required for Netdata host metrics (mount ns, syslog, etc.)
+    security_opt:
+      # apparmor:unconfined is required because Netdata's eBPF and proc plugins
+      # perform operations that AppArmor's default policy denies. This is a known
+      # trade-off: monitor Netdata CVEs and keep the image pinned to a specific
+      # digest in production. The docker socket is mounted read-only to limit blast radius.
+      - apparmor:unconfined
+    volumes:
+      - netdataconfig:/etc/netdata
+      - netdatalib:/var/lib/netdata
+      - netdatacache:/var/cache/netdata
+      - /etc/passwd:/host/etc/passwd:ro
+      - /etc/group:/host/etc/group:ro
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/run/utmp:/var/run/utmp:ro
+      # Mount alert config so it survives container restarts
+      - ./netdata/health_alarm_notify.conf:/etc/netdata/health_alarm_notify.conf:ro
+    environment:
+      - NETDATA_CLAIM_TOKEN=
+      - DO_NOT_TRACK=1
+
+  # ─── P1: Prometheus ─────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    mem_limit: 256m
+    restart: unless-stopped
+    # extra_hosts makes host.docker.internal resolve to the host on Linux.
+    # Without this, Prometheus cannot reach the DropDeploy API or node-exporter.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+      - --storage.tsdb.retention.size=5GB
+      # 0.0.0.0 so Grafana can reach it via Docker service DNS.
+      # External access is restricted via the ports mapping (127.0.0.1 only).
+      - --web.listen-address=0.0.0.0:9090
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/rules:/etc/prometheus/rules:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+
+  # ─── P1: Grafana ────────────────────────────────────────────────────────────
+  # Required alongside Prometheus — without Grafana there is no alert delivery
+  # path (alertmanagers: [] means Prometheus fires rules internally but sends
+  # nothing). REQUIRED: set GRAFANA_ADMIN_PASSWORD and BASE_DOMAIN in your
+  # environment or /opt/dropdeploy/.env before starting.
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    mem_limit: 150m
+    restart: unless-stopped
+    environment:
+      - GF_DATABASE_TYPE=sqlite3
+      - GF_ANALYTICS_REPORTING_ENABLED=false
+      - GF_ANALYTICS_CHECK_FOR_UPDATES=false
+      # BASE_DOMAIN must be set in the environment (e.g. en3.wtf).
+      # If unset Docker Compose substitutes empty string → malformed URL.
+      - GF_SERVER_ROOT_URL=https://monitor.${BASE_DOMAIN:?BASE_DOMAIN is required}/grafana
+      - GF_SERVER_SERVE_FROM_SUB_PATH=true
+      # No default — Grafana will refuse to start if this is unset, preventing
+      # accidental deployment with a well-known password.
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD is required}
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "127.0.0.1:3100:3000"
+    depends_on:
+      - prometheus
+
+  # ─── P1: Node Exporter ──────────────────────────────────────────────────────
+  # Required for DiskSpaceCritical, DiskSpaceWarning, and HighMemoryUsage alerts.
+  # Without this, those alert rules have no data and will never fire.
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: node-exporter
+    mem_limit: 30m
+    restart: unless-stopped
+    network_mode: host
+    pid: host
+    command:
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|run)($$|/)
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+
+  # ─── P2: Loki ───────────────────────────────────────────────────────────────
+  # Log aggregation. 3-day retention to stay within 20 GB disk budget.
+  # loki:
+  #   image: grafana/loki:latest
+  #   container_name: loki
+  #   mem_limit: 150m
+  #   restart: unless-stopped
+  #   command: -config.file=/etc/loki/local-config.yaml
+  #   volumes:
+  #     - ./loki/config.yaml:/etc/loki/local-config.yaml:ro
+  #     - loki_data:/loki
+  #   ports:
+  #     - "127.0.0.1:3101:3100"
+
+  # ─── P2: Promtail ───────────────────────────────────────────────────────────
+  # Ships Docker container stdout/stderr logs to Loki.
+  # promtail:
+  #   image: grafana/promtail:latest
+  #   container_name: promtail
+  #   mem_limit: 50m
+  #   restart: unless-stopped
+  #   volumes:
+  #     - ./promtail/config.yaml:/etc/promtail/config.yaml:ro
+  #     - /var/lib/docker/containers:/var/lib/docker/containers:ro
+  #     - /var/log:/var/log:ro
+  #     # docker.sock is required for docker_sd_configs service discovery.
+  #     # Without it, Promtail starts but finds zero scrape targets and ships nothing.
+  #     - /var/run/docker.sock:/var/run/docker.sock:ro
+  #     # Named volume keeps the position bookmark across restarts.
+  #     # Without this, /tmp/positions.yaml is lost on every restart and
+  #     # Promtail re-ingests all logs from offset 0, creating duplicates in Loki.
+  #     - promtail_positions:/var/lib/promtail
+  #   command: -config.file=/etc/promtail/config.yaml
+  #   depends_on:
+  #     - loki
+
+volumes:
+  netdataconfig:
+  netdatalib:
+  netdatacache:
+  prometheus_data:
+  grafana_data:
+  # loki_data:
+  # promtail_positions:

@@ -30,3 +30,6 @@ data/
 # misc
 .DS_Store
 *.pem
+
+# monitoring credentials — contains live Slack webhook URL
+infra/monitoring/netdata/health_alarm_notify.conf

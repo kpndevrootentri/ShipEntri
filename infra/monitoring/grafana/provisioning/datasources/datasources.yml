@@ -1,0 +1,25 @@
+# Grafana auto-provisioned data sources (P1/P2)
+# Grafana loads these on startup — no manual UI configuration needed.
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    jsonData:
+      timeInterval: 15s
+
+  # Uncomment when Loki is enabled (P2)
+  # - name: Loki
+  #   type: loki
+  #   access: proxy
+  #   url: http://loki:3100
+  #   jsonData:
+  #     derivedFields:
+  #       - datasourceUid: prometheus
+  #         matcherRegex: '"correlation_id":"([^"]+)"'
+  #         name: correlation_id
+  #         url: '$${__value.raw}'
