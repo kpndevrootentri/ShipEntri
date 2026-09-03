@@ -27,6 +27,8 @@ COPY package*.json ./
 RUN npm install
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
+# Cap V8 heap so the build fails loudly instead of being OOM-killed by the host
+ENV NODE_OPTIONS="--max-old-space-size=2048"
 ENV DATABASE_URL="postgresql://placeholder:placeholder@localhost:5432/placeholder"
 
 {{NEXT_PUBLIC_BUILD_ARGS}}
@@ -52,6 +54,8 @@ COPY package*.json ./
 RUN npm install
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
+# Cap V8 heap so the build fails loudly instead of being OOM-killed by the host
+ENV NODE_OPTIONS="--max-old-space-size=2048"
 ENV DATABASE_URL="postgresql://placeholder:placeholder@localhost:5432/placeholder"
 
 {{NEXT_PUBLIC_BUILD_ARGS}}

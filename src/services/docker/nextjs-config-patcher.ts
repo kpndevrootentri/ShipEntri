@@ -37,7 +37,8 @@ export async function patchNextConfig(
         '\n// dropdeploy-patch\n' +
         'const _ddCfg = module.exports;\n' +
         '_ddCfg.eslint = { ..._ddCfg.eslint, ignoreDuringBuilds: true };\n' +
-        '_ddCfg.typescript = { ..._ddCfg.typescript, ignoreBuildErrors: true };\n';
+        '_ddCfg.typescript = { ..._ddCfg.typescript, ignoreBuildErrors: true };\n' +
+        '_ddCfg.experimental = { ..._ddCfg.experimental, cpus: 1, workerThreads: false };\n';
       if (addStaticExport) {
         content += "_ddCfg.output = 'export';\n";
         content += '_ddCfg.basePath = "";\n';
@@ -55,6 +56,7 @@ export async function patchNextConfig(
         /export\s+default\s+(\w+)/,
         '$1.eslint = { ...$1.eslint, ignoreDuringBuilds: true };\n' +
           '$1.typescript = { ...$1.typescript, ignoreBuildErrors: true };\n' +
+          '$1.experimental = { ...$1.experimental, cpus: 1, workerThreads: false };\n' +
           extraLines +
           '// dropdeploy-patch\nexport default $1'
       );
@@ -72,6 +74,7 @@ export async function patchNextConfig(
       'module.exports = {\n' +
       '  eslint: { ignoreDuringBuilds: true },\n' +
       '  typescript: { ignoreBuildErrors: true },\n' +
+      '  experimental: { cpus: 1, workerThreads: false },\n' +
       staticExportLine +
       '};\n',
     'utf8'
