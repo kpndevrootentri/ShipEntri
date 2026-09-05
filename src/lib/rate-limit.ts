@@ -16,8 +16,11 @@ const WEBHOOK_MAX_REQUESTS = 60; // 60 deliveries per minute per source
 // DropDeploy is scaled horizontally, back this with Redis (getRedisConnection).
 const store = new Map<string, RateLimitEntry>();
 
-// Periodically clean expired entries to prevent memory leaks
-setInterval(() => {
+// Periodically clean expired entries to prevent memory leaks.
+// unref() so this timer never by itself keeps the process alive: a long-lived
+// server ignores it, while a short-lived one (a test run, a script) can still
+// exit instead of hanging on the sweep.
+const sweep = setInterval(() => {
   const now = Date.now();
   for (const [key, entry] of store) {
     if (now > entry.resetAt) {
@@ -25,6 +28,7 @@ setInterval(() => {
     }
   }
 }, 60_000);
+sweep.unref?.();
 
 /**
  * Generic in-memory fixed-window rate limiter.
@@ -69,4 +73,45 @@ export function checkEnvVarRateLimit(userId: string): NextResponse | null {
 /** Rate limit the public webhook endpoint — 60 deliveries/min keyed by source (IP/repo). */
 export function checkWebhookRateLimit(source: string): NextResponse | null {
   return checkRateLimit(`webhook:${source}`, { windowMs: WEBHOOK_WINDOW_MS, max: WEBHOOK_MAX_REQUESTS });
+}
+
+const DOMAIN_MUTATION_WINDOW_MS = 60_000; // 1 minute
+const DOMAIN_MUTATION_MAX = 20; // 20 add/patch calls per minute per user
+
+const DOMAIN_VERIFY_WINDOW_MS = 60_000; // 1 minute
+const DOMAIN_VERIFY_MAX = 6; // 6 manual DNS checks per minute per user
+
+const TLS_ASK_WINDOW_MS = 60_000; // 1 minute
+const TLS_ASK_MAX = 5; // matches Caddy's own on-demand burst
+
+/** Rate limit custom-domain add/update — 20 req/min/user. */
+export function checkDomainMutationRateLimit(userId: string): NextResponse | null {
+  return checkRateLimit(`domain:${userId}`, {
+    windowMs: DOMAIN_MUTATION_WINDOW_MS,
+    max: DOMAIN_MUTATION_MAX,
+  });
+}
+
+/**
+ * Rate limit manual DNS verification — 6 req/min/user.
+ * Tighter than the other mutations because each call fans out to several
+ * outbound DNS queries against a hostname the user chose.
+ */
+export function checkDomainVerifyRateLimit(userId: string): NextResponse | null {
+  return checkRateLimit(`domain-verify:${userId}`, {
+    windowMs: DOMAIN_VERIFY_WINDOW_MS,
+    max: DOMAIN_VERIFY_MAX,
+  });
+}
+
+/**
+ * Rate limit the Caddy ask endpoint, keyed by the hostname being asked about.
+ * Bounds how fast a single hostname can drive certificate orders, which is what
+ * protects the shared Let's Encrypt quota.
+ */
+export function checkTlsAskRateLimit(hostname: string): NextResponse | null {
+  return checkRateLimit(`tls-ask:${hostname.toLowerCase()}`, {
+    windowMs: TLS_ASK_WINDOW_MS,
+    max: TLS_ASK_MAX,
+  });
 }

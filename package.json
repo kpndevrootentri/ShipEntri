@@ -13,6 +13,7 @@
     "db:migrate": "prisma migrate dev",
     "db:studio": "prisma studio",
     "worker": "tsx src/workers/deployment.worker.ts",
+    "worker:domains": "tsx src/workers/domain.worker.ts",
     "test": "jest"
   },
   "dependencies": {

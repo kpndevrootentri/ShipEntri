@@ -118,6 +118,14 @@ export class AdminService {
     return this.userRepo.updateQuota(userId, quota);
   }
 
+  /** Custom-domain allowance. Zero means the user cannot add any. */
+  async updateUserDomainQuota(userId: string, quota: number): Promise<User> {
+    if (quota < 0) throw new ValidationError('Quota must be a non-negative integer');
+    const user = await this.userRepo.findById(userId);
+    if (!user) throw new NotFoundError('User');
+    return this.userRepo.updateDomainQuota(userId, quota);
+  }
+
   async resetUserPassword(userId: string, newPassword: string): Promise<void> {
     const user = await this.userRepo.findById(userId);
     if (!user) throw new NotFoundError('User');

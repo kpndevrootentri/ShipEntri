@@ -4,6 +4,17 @@ import * as os from 'os';
 
 const defaultBaseDir = path.join(os.homedir(), '.dropdeploy');
 
+/**
+ * Env booleans. NOTE: `z.coerce.boolean()` is wrong for env vars — it applies
+ * JS truthiness, so the string "false" coerces to `true` and a kill-switch can
+ * never be switched off. Only an explicit truthy token enables a flag.
+ */
+const envBool = (defaultValue: boolean) =>
+  z
+    .string()
+    .optional()
+    .transform((v) => (v === undefined || v === '' ? defaultValue : ['1', 'true', 'yes', 'on'].includes(v.trim().toLowerCase())));
+
 const envSchema = z.object({
   DATABASE_URL: z.string().url(),
   REDIS_HOST: z.string().default('localhost'),
@@ -19,7 +30,6 @@ const envSchema = z.object({
   PROJECTS_DIR: z.string().default(path.join(defaultBaseDir, 'projects')),
   STATIC_SERVE_DIR: z.string().default(path.join(defaultBaseDir, 'static-sites')),
   DOCKER_DATA_DIR: z.string().default(path.join(defaultBaseDir, 'docker')),
-  NGINX_CONFIG_PATH: z.string().default('/etc/nginx/sites-enabled'),
   BULLMQ_CONCURRENCY: z.coerce.number().int().min(1).max(20).default(5),
   BULLMQ_JOB_TIMEOUT_MS: z.coerce.number().int().min(60_000).default(15 * 60 * 1000),
   CONTRIBUTOR_EMAIL: z.string().email().optional(),
@@ -35,6 +45,24 @@ const envSchema = z.object({
   GITLAB_CLIENT_ID: z.string().optional(),
   GITLAB_CLIENT_SECRET: z.string().optional(),
   APP_URL: z.string().url().optional(),
+
+  // ── Custom domains ───────────────────────────────────────────────────────
+  // Master switch for the whole feature. When false the API rejects domain
+  // mutations, the proxy never attempts host resolution, and the Caddy "ask"
+  // endpoint refuses every issuance. This is the rollback lever.
+  CUSTOM_DOMAINS_ENABLED: envBool(false),
+  // Independent kill-switch for certificate issuance only. Lets you keep
+  // routing for already-ACTIVE domains while stopping all new ACME orders.
+  TLS_CHECK_ENABLED: envBool(false),
+  // A-record target shown to users for apex domains.
+  PLATFORM_INGRESS_IP: z.string().optional(),
+  // CNAME target shown to users for sub-domains, e.g. "ingress.en3.wtf".
+  CUSTOM_DOMAIN_CNAME_TARGET: z.string().optional(),
+  // Shared secret the edge sends to /api/internal/tls-check. When set, the
+  // endpoint requires it; the edge is the only party that should hold it.
+  INTERNAL_EDGE_TOKEN: z.string().min(16).optional(),
+  // Comma-separated hostnames that may never be claimed as custom domains.
+  CUSTOM_DOMAIN_DENYLIST: z.string().optional(),
 });
 
 type Env = z.infer<typeof envSchema>;

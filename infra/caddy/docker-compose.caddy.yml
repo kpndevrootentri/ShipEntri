@@ -1,0 +1,33 @@
+# Caddy edge for DropDeploy.
+#
+#   docker compose -f infra/caddy/docker-compose.caddy.yml up -d
+#
+# The image needs a DNS-provider plugin for the wildcard certificate; build it
+# with xcaddy, e.g.:
+#   xcaddy build --with github.com/caddy-dns/cloudflare
+services:
+  caddy:
+    image: caddy:2-alpine
+    container_name: dropdeploy-caddy
+    restart: unless-stopped
+    # host networking keeps 127.0.0.1:3001 reachable as the upstream and lets
+    # the app see real client addresses.
+    network_mode: host
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Certificates and ACME account state MUST be durable. On a fresh volume
+      # Caddy re-orders every certificate it previously held, which is the
+      # fastest way to exhaust the Let's Encrypt weekly quota.
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      BASE_DOMAIN: ${BASE_DOMAIN}
+      APP_UPSTREAM: ${APP_UPSTREAM:-127.0.0.1:3001}
+      INTERNAL_EDGE_TOKEN: ${INTERNAL_EDGE_TOKEN}
+      ACME_EMAIL: ${ACME_EMAIL}
+      DNS_PROVIDER: ${DNS_PROVIDER:-cloudflare}
+      DNS_API_TOKEN: ${DNS_API_TOKEN}
+
+volumes:
+  caddy_data:
+  caddy_config:

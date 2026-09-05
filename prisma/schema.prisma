@@ -16,13 +16,15 @@ enum UserRole {
 }
 
 model User {
-  id           String   @id @default(cuid())
-  email        String   @unique
-  passwordHash String   @map("password_hash")
+  id                String   @id @default(cuid())
+  email             String   @unique
+  passwordHash      String   @map("password_hash")
   role              UserRole @default(USER)
   mustResetPassword Boolean  @default(false) @map("must_reset_password")
 
-  projectQuota  Int      @default(5) @map("project_quota")
+  projectQuota Int @default(5) @map("project_quota")
+  // Custom domains the user may claim across all their projects.
+  domainQuota  Int @default(1) @map("domain_quota")
 
   projects      Project[]
   auditLogs     AuditLog[]
@@ -36,21 +38,21 @@ model User {
 }
 
 model Project {
-  id          String     @id @default(cuid())
-  name        String
-  slug        String     @unique
-  description String?    @db.Text
-  source      SourceType
-  githubUrl   String?    @map("github_url")
-  type        ProjectType
-  branch      String     @default("main")
-  isPrivate   Boolean    @default(false) @map("is_private")
-  useStaticHosting Boolean @default(false) @map("use_static_hosting")
+  id               String      @id @default(cuid())
+  name             String
+  slug             String      @unique
+  description      String?     @db.Text
+  source           SourceType
+  githubUrl        String?     @map("github_url")
+  type             ProjectType
+  branch           String      @default("main")
+  isPrivate        Boolean     @default(false) @map("is_private")
+  useStaticHosting Boolean     @default(false) @map("use_static_hosting")
 
   // Auto-deploy on git push (GitHub webhooks). Disabled by default.
   autoDeploy       Boolean @default(false) @map("auto_deploy")
-  githubHookId     String? @map("github_hook_id")          // numeric hook id from GitHub, for deletion
-  webhookSecretEnc String? @db.Text @map("webhook_secret_enc")  // AES-256-GCM triplet (matches GitProvider)
+  githubHookId     String? @map("github_hook_id") // numeric hook id from GitHub, for deletion
+  webhookSecretEnc String? @map("webhook_secret_enc") @db.Text // AES-256-GCM triplet (matches GitProvider)
   webhookSecretIv  String? @map("webhook_secret_iv")
   webhookSecretTag String? @map("webhook_secret_tag")
 
@@ -63,12 +65,68 @@ model Project {
   showcase             ProjectShowcase?
   proxyHits            ProxyHit[]
   accessList           ProjectAccess[]
+  customDomains        CustomDomain[]
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
   @@index([userId])
   @@map("projects")
+}
+
+/// Lifecycle of a user-supplied custom domain.
+///
+///   PENDING_DNS  — created; ownership TXT not seen yet
+///   VERIFYING    — a check is in flight
+///   VERIFIED     — ownership proven; the edge is now allowed to issue a cert
+///   PROVISIONING — routing live, waiting on the first ACME issuance
+///   ACTIVE       — serving over HTTPS
+///   FAILED       — verification or issuance failed; user can retry
+enum DomainStatus {
+  PENDING_DNS
+  VERIFYING
+  VERIFIED
+  PROVISIONING
+  ACTIVE
+  FAILED
+}
+
+/// A custom hostname mapped onto a project.
+///
+/// `hostname` is globally unique — that uniqueness IS the claim lock and the
+/// primary defence against one project hijacking another's domain. Combined
+/// with the TXT ownership proof, only the DNS-proven owner keeps the claim.
+model CustomDomain {
+  id        String       @id @default(cuid())
+  hostname  String       @unique // punycode, lowercase, no trailing dot
+  projectId String       @map("project_id")
+  status    DomainStatus @default(PENDING_DNS)
+
+  /// Exactly one primary per project (enforced in the service, not the DB, so
+  /// that swapping primaries stays a single transaction).
+  isPrimary         Boolean @default(false) @map("is_primary")
+  /// Non-primary domains 301 to the primary when true (canonicalisation/SEO).
+  redirectToPrimary Boolean @default(true) @map("redirect_to_primary")
+
+  /// TXT value published at _dropdeploy-verify.<hostname>.
+  verificationToken String    @map("verification_token")
+  verifiedAt        DateTime? @map("verified_at")
+  lastCheckedAt     DateTime? @map("last_checked_at")
+  /// Human-readable reason for the most recent failure (shown in the UI).
+  lastError         String?   @map("last_error") @db.Text
+  /// Consecutive failed re-checks; drives back-off and eventual revocation.
+  failureCount      Int       @default(0) @map("failure_count")
+  /// Set once the edge has actually served TLS for this host.
+  certIssuedAt      DateTime? @map("cert_issued_at")
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([projectId])
+  @@index([status])
+  @@map("custom_domains")
 }
 
 enum AccessKind {
@@ -109,7 +167,7 @@ model ProjectShowcase {
   publishedAt      DateTime? @map("published_at")
   viewCount        Int       @default(0) @map("view_count")
 
-  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -159,12 +217,12 @@ model GitProvider {
   username       String
   avatarUrl      String?    @map("avatar_url")
 
-  encryptedToken String     @db.Text @map("encrypted_token")
+  encryptedToken String @map("encrypted_token") @db.Text
   iv             String
-  authTag        String     @map("auth_tag")
+  authTag        String @map("auth_tag")
 
   // GitLab only — refresh token and expiry (GitHub tokens don't expire)
-  encryptedRefreshToken String?   @db.Text @map("encrypted_refresh_token")
+  encryptedRefreshToken String?   @map("encrypted_refresh_token") @db.Text
   refreshIv             String?   @map("refresh_iv")
   refreshAuthTag        String?   @map("refresh_auth_tag")
   tokenExpiresAt        DateTime? @map("token_expires_at")
@@ -197,12 +255,12 @@ enum ProjectType {
 }
 
 model EnvironmentVariable {
-  id             String          @id @default(cuid())
+  id             String         @id @default(cuid())
   key            String
-  encryptedValue String          @map("encrypted_value") @db.Text
+  encryptedValue String         @map("encrypted_value") @db.Text
   iv             String
-  authTag        String          @map("auth_tag")
-  environment    EnvEnvironment  @default(ALL)
+  authTag        String         @map("auth_tag")
+  environment    EnvEnvironment @default(ALL)
 
   projectId String  @map("project_id")
   project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
@@ -227,8 +285,8 @@ model AuditLog {
   action    String // ENV_CREATED, ENV_UPDATED, ENV_DELETED
   targetKey String @map("target_key")
 
-  userId    String  @map("user_id")
-  user      User    @relation(fields: [userId], references: [id])
+  userId String @map("user_id")
+  user   User   @relation(fields: [userId], references: [id])
 
   projectId String  @map("project_id")
   project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
