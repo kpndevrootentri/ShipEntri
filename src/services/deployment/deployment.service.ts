@@ -6,7 +6,6 @@ import { deploymentQueueAdapter, type IDeploymentQueue } from '@/lib/queue';
 import { dockerService, type DockerService } from '@/services/docker';
 import { gitService, type IGitService } from '@/services/git';
 import { envVarService, type EnvironmentVariableService } from '@/services/env-var';
-import { nginxService, type INginxService } from '@/services/nginx';
 import { gitProviderService } from '@/services/git-provider';
 import { getRedisConnection } from '@/lib/redis';
 import { getConfig } from '@/lib/config';
@@ -29,7 +28,6 @@ export class DeploymentService {
     private readonly docker: DockerService,
     private readonly git: IGitService,
     private readonly envVar: EnvironmentVariableService,
-    private readonly nginx: INginxService,
   ) { }
 
   /**
@@ -510,6 +508,5 @@ export const deploymentService = new DeploymentService(
   dockerService,
   gitService,
   envVarService,
-  nginxService,
 );
 

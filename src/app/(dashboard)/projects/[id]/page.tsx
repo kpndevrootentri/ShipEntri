@@ -17,6 +17,7 @@ import { cn } from '@/lib/utils';
 import { ProjectTerminal } from '@/components/features/terminal';
 import { EnvVarsPanel } from '@/components/features/env-vars-panel';
 import { AccessListPanel } from '@/components/features/access-list-panel';
+import { DomainsPanel } from '@/components/features/domains-panel';
 import { getLocalIP } from '@/lib/local-ip';
 import {
   ArrowLeft,
@@ -86,7 +87,7 @@ interface ProjectDetail {
 }
 
 type FrameworkType = 'STATIC' | 'NODEJS' | 'NEXTJS' | 'DJANGO' | 'REACT' | 'FASTAPI' | 'FLASK' | 'VUE' | 'SVELTE';
-type Tab = 'overview' | 'deployments' | 'analytics' | 'env' | 'settings' | 'advanced' | 'publish';
+type Tab = 'overview' | 'deployments' | 'analytics' | 'env' | 'domains' | 'settings' | 'advanced' | 'publish';
 
 interface TrafficData {
   totalHits: number;
@@ -957,6 +958,7 @@ const TABS: { key: Tab; label: string; icon: React.ReactNode }[] = [
   { key: 'deployments', label: 'Deployments', icon: <Rocket className="h-4 w-4" /> },
   { key: 'analytics', label: 'Analytics', icon: <BarChart2 className="h-4 w-4" /> },
   { key: 'env', label: 'Environment', icon: <KeyRound className="h-4 w-4" /> },
+  { key: 'domains', label: 'Domains', icon: <Globe className="h-4 w-4" /> },
   { key: 'publish', label: 'Publish', icon: <BookOpen className="h-4 w-4" /> },
   { key: 'settings', label: 'Settings', icon: <Settings className="h-4 w-4" /> },
   { key: 'advanced', label: 'Advanced', icon: <Terminal className="h-4 w-4" /> },
@@ -2227,6 +2229,9 @@ export default function ProjectDetailPage(): React.ReactElement {
           )}
           {activeTab === 'env' && (
             <EnvVarsPanel projectId={project.id} />
+          )}
+          {activeTab === 'domains' && (
+            <DomainsPanel projectId={project.id} />
           )}
           {activeTab === 'publish' && (
             <PublishPanel

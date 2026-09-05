@@ -4,3 +4,4 @@ export * from './deployment.repository';
 export * from './env-var.repository';
 export * from './audit-log.repository';
 export * from './project-access.repository';
+export * from './domain.repository';
