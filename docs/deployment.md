@@ -406,7 +406,7 @@ server {
 
 ## Step 13 — Process Management with PM2
 
-PM2 keeps both the Next.js app and BullMQ worker running, restarts on crash, and starts on reboot.
+PM2 keeps the Next.js app and the background workers running, restarts them on crash, and starts them on reboot.
 
 ```bash
 # Install PM2 globally
@@ -444,6 +444,26 @@ module.exports = {
       log_file: '/home/ubuntu/logs/worker.log',
       error_file: '/home/ubuntu/logs/worker-error.log',
     },
+    {
+      // Custom domains only. Re-checks tenant DNS on an interval: promotes
+      // domains whose records have appeared, and tears down ones whose
+      // ownership record has gone. Without it a user who publishes their DNS
+      // and never returns to press "Verify" is stuck on PENDING_DNS forever.
+      // Harmless to run with CUSTOM_DOMAINS_ENABLED=false — it idles.
+      name: 'dropdeploy-domains',
+      script: 'node_modules/.bin/tsx',
+      args: 'src/workers/domain.worker.ts',
+      cwd: '/home/ubuntu/dropdeploy',
+      instances: 1,
+      // Must stay at 1. The sweep is a repeatable BullMQ job with a fixed job
+      // id; a second instance would duplicate the DNS fan-out for no benefit.
+      exec_mode: 'fork',
+      env_file: '/home/ubuntu/dropdeploy/.env',
+      restart_delay: 5000,
+      max_restarts: 10,
+      log_file: '/home/ubuntu/logs/domains.log',
+      error_file: '/home/ubuntu/logs/domains-error.log',
+    },
   ],
 };
 ```
@@ -451,7 +471,7 @@ module.exports = {
 ```bash
 mkdir -p /home/ubuntu/logs
 
-# Start both processes
+# Start every process in the file
 pm2 start /home/ubuntu/dropdeploy/ecosystem.config.js
 
 # Save process list for reboot persistence
@@ -461,7 +481,7 @@ pm2 save
 pm2 startup
 # Run the command it outputs (starts with sudo env PATH=...)
 
-# Verify both are running
+# Verify they are all running
 pm2 status
 pm2 logs --lines 50
 ```
@@ -530,6 +550,7 @@ curl -I https://app.yourdomain.com
 # Check logs for errors
 pm2 logs dropdeploy-app --lines 100
 pm2 logs dropdeploy-worker --lines 100
+pm2 logs dropdeploy-domains --lines 100
 
 # Check Docker daemon is accessible
 docker ps
@@ -564,6 +585,7 @@ npm run build
 # Restart processes (zero-downtime reload for app)
 pm2 reload dropdeploy-app
 pm2 restart dropdeploy-worker
+pm2 restart dropdeploy-domains
 
 pm2 status
 ```
@@ -612,6 +634,8 @@ pm2 set pm2-logrotate:retain 7
 |---|---|
 | App not loading | `pm2 logs dropdeploy-app` — check for port/env errors |
 | Deployments stuck in BUILDING | Worker crashed — `pm2 restart dropdeploy-worker` |
+| Custom domain stuck in PENDING_DNS / never re-checks | Domain worker not running — `pm2 status`, then `pm2 restart dropdeploy-domains`. Confirm the user's TXT record actually resolves: `dig +short TXT _dropdeploy-verify.<their-domain>` |
+| Custom domain went ACTIVE → FAILED | Five consecutive DNS re-checks failed, so it is no longer served. Check the user still publishes the TXT record; `pm2 logs dropdeploy-domains` names the reason |
 | Docker build fails | `docker info` — verify daemon is running and accessible |
 | Database connection refused | `sudo systemctl status postgresql` |
 | Redis connection refused | `sudo systemctl status redis-server` |
@@ -634,8 +658,9 @@ VPS
 │   └── app.yourdomain.com  → 127.0.0.1:3000  (all traffic, including subdomains via in-app proxy)
 │
 ├── PM2
-│   ├── dropdeploy-app    (Next.js,  port 3000)
-│   └── dropdeploy-worker (BullMQ worker)
+│   ├── dropdeploy-app     (Next.js,  port 3000)
+│   ├── dropdeploy-worker  (BullMQ deployment worker)
+│   └── dropdeploy-domains (custom-domain DNS re-check sweep)
 │
 ├── PostgreSQL  (localhost:5432)
 ├── Redis       (localhost:6379)
