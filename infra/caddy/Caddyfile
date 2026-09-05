@@ -8,10 +8,10 @@
 #
 # Placeholders to substitute before use:
 #   {$BASE_DOMAIN}          e.g. app.en3.wtf
-#   {$APP_UPSTREAM}         e.g. 127.0.0.1:3001
+#   {$APP_UPSTREAM}         e.g. 127.0.0.1:3000   ← check the real port
 #   {$INTERNAL_EDGE_TOKEN}  the shared secret from the app's env
 #   {$ACME_EMAIL}           contact address for Let's Encrypt
-#   {$DNS_API_TOKEN}        DNS provider token, for the wildcard cert only
+#   {$WILDCARD_CERT} / {$WILDCARD_KEY}  paths to the existing certbot wildcard
 
 {
 	email {$ACME_EMAIL}
@@ -51,7 +51,9 @@
 		header_up X-Real-IP {remote_host}
 		header_up X-Forwarded-Proto {scheme}
 
-		# Deployed apps stream logs and may hold long-lived connections.
+		# Deployed apps stream logs (SSE on /logs/stream) and may hold
+		# long-lived connections. Without this, Caddy buffers and the stream
+		# arrives in chunks or not at all.
 		flush_interval -1
 	}
 
@@ -69,19 +71,41 @@
 }
 
 # ── Platform + tenant subdomains ──────────────────────────────────────────────
-# One wildcard certificate, obtained over DNS-01 (the only challenge type that
-# can issue a wildcard). Unchanged by the custom-domain work.
+# Served from the EXISTING certbot wildcard, not re-issued by Caddy.
+#
+# This is deliberate for the nginx→Caddy cutover: reusing the cert files on disk
+# means the swap places zero ACME orders, so the platform cannot go dark because
+# an order failed or hit a rate limit. certbot keeps owning this certificate.
+#
+# It is not the end state. That certificate is `authenticator = manual` and so
+# does NOT auto-renew — see docs/nginx-to-caddy-cutover.md, which covers moving
+# wildcard issuance into Caddy over DNS-01 before it expires.
 *.{$BASE_DOMAIN}, {$BASE_DOMAIN} {
-	tls {
-		dns {$DNS_PROVIDER} {$DNS_API_TOKEN}
-	}
+	tls {$WILDCARD_CERT} {$WILDCARD_KEY}
 	import app_upstream
 }
+
+# ── Follow-up: let Caddy own the wildcard via DNS-01 ──────────────────────────
+# Replace the block above with this once a Route 53 credential exists and the
+# image has been rebuilt with the plugin (xcaddy --with github.com/caddy-dns/route53).
+# This is what makes wildcard renewal automatic.
+#
+# *.{$BASE_DOMAIN}, {$BASE_DOMAIN} {
+# 	tls {
+# 		dns route53 {
+# 			max_retries 10
+# 		}
+# 	}
+# 	import app_upstream
+# }
 
 # ── Custom domains ────────────────────────────────────────────────────────────
 # Catch-all for every other hostname. `on_demand` means no certificate is held
 # in advance; one is ordered at handshake time, and only if the ask endpoint
 # authorises it. Renewal is automatic — there is no cron to maintain.
+#
+# These use HTTP-01/TLS-ALPN, which need no DNS credentials, which is why custom
+# domains work from day one even while the wildcard is still certbot's.
 :443 {
 	tls {
 		on_demand
