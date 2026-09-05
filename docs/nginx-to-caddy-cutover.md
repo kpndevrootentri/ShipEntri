@@ -285,6 +285,33 @@ with three days left is a genuinely bad position.
 
 ---
 
+## Executed 2026-09-05
+
+Steps 1–4 were run on the production host. Rehearsal caught three config faults
+before any of them could touch live traffic — the reason §3 exists:
+
+| Fault | Symptom | Fix |
+|---|---|---|
+| `email` wired to an unset variable | `email` with no argument is a **parse error**, Caddy would not start | commented out; set it before Step 6 |
+| `on_demand_tls { interval / burst }` | removed in Caddy 2.10 (host runs 2.11.4); config rejected | removed — see below |
+| Caddy auto-binds `:80` | collided with nginx during rehearsal | `http_port`/`https_port` overrides, rehearsal only |
+
+> [!warning] The edge no longer rate-limits certificate issuance
+> Dropping `interval`/`burst` was forced, not chosen. Caddy 2.10 removed them.
+> The ask endpoint's own limiter (`checkTlsAskRateLimit`, 5/min per hostname) is
+> now the **only** throttle between a hostname scan and the Let's Encrypt quota
+> of 50 certificates per registered domain per week. Treat it as load-bearing.
+
+Post-swap verification, from outside the host: `app.en3.wtf` `/`, `/login`,
+`/explore` all 200; tenant subdomain 200; HTTP→HTTPS 301; certificate served is
+certbot's wildcard (`notAfter=Dec 3`), confirming Caddy placed no ACME order.
+Security headers present, gzip negotiated, no application errors.
+
+One hardening change was made during the cutover: `/api/internal/*` is now
+refused at the edge. Caddy reaches the ask endpoint directly on the upstream
+address, which does not pass through the public site block, so this removes the
+endpoint from the internet at no cost. Its token check still stands behind it.
+
 ## Summary of risk
 
 | Risk | Likelihood | Mitigation |
