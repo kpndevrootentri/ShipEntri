@@ -1,5 +1,6 @@
 import type { CustomDomain, DomainStatus, Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
+import { RECHECKABLE_STATUSES } from '@/lib/domain-status';
 
 /** The minimum a request needs to route a custom host to a container. */
 export interface DomainRoute {
@@ -35,12 +36,6 @@ export interface IDomainRepository {
    */
   findDueForRecheck(olderThan: Date, limit: number): Promise<CustomDomain[]>;
 }
-
-/** Statuses the ask endpoint and the router treat as "the owner proved it". */
-export const ISSUABLE_STATUSES: DomainStatus[] = ['VERIFIED', 'PROVISIONING', 'ACTIVE'];
-
-/** Statuses a background re-check should keep polling. */
-const RECHECKABLE_STATUSES: DomainStatus[] = ['PENDING_DNS', 'VERIFYING', 'VERIFIED', 'PROVISIONING', 'FAILED'];
 
 export class DomainRepository implements IDomainRepository {
   async findById(id: string): Promise<CustomDomain | null> {

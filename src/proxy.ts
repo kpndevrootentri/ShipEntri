@@ -3,6 +3,8 @@ import type { NextRequest } from 'next/server';
 import * as jose from 'jose';
 import { randomUUID } from 'crypto';
 import { getTokenFromCookie } from '@/lib/auth-cookie';
+import { normalizeHostKey } from '@/lib/host-key';
+import { isRoutableStatus } from '@/lib/domain-status';
 
 const DASHBOARD_PREFIX = '/dashboard';
 /** Left to the TLS-terminating edge, which answers HTTP-01 challenges itself. */
@@ -33,9 +35,14 @@ function escapeRegex(str: string): string {
  * IP literals count as platform hosts: local development and LAN testing reach
  * the app by raw IP (see `src/lib/local-ip.ts`), and health checks often do
  * too. Treating them as unknown tenant hosts would 404 all of that.
+ *
+ * `PLATFORM_EXTRA_HOSTS` is the escape hatch for every other named host an
+ * operator points at this app — a monitoring alias, a staging CNAME, an
+ * internal health check that connects by name. Without it, turning the feature
+ * on would 404 them all.
  */
 function isPlatformHost(hostname: string, baseDomain: string): boolean {
-  const host = hostname.toLowerCase().split(':')[0];
+  const host = normalizeHostKey(hostname);
   if (!host) return true;
   if (host === 'localhost' || host.endsWith('.localhost')) return true;
   // IPv4 literal, or an IPv6 literal in brackets.
@@ -50,6 +57,15 @@ function isPlatformHost(hostname: string, baseDomain: string): boolean {
       // Malformed APP_URL — nothing to compare against.
     }
   }
+
+  const extra = process.env.PLATFORM_EXTRA_HOSTS;
+  if (extra) {
+    for (const entry of extra.split(',')) {
+      const allowed = normalizeHostKey(entry.trim());
+      if (allowed && (host === allowed || host.endsWith(`.${allowed}`))) return true;
+    }
+  }
+
   return false;
 }
 
@@ -107,7 +123,9 @@ export async function proxy(request: NextRequest): Promise<NextResponse> {
   // string match and runs first; only a host that misses it — and is not one of
   // the platform's own hosts — costs a (cached) lookup. Everything else falls
   // through to the auth guard exactly as before, so this branch cannot affect
-  // any existing deployment.
+  // any existing deployment. The dynamic import defers the resolver's module
+  // *initialisation* (Prisma/Redis connections) off that common path; it is not
+  // a bundle-size optimisation.
   //
   // The rewrite target is identical to the subdomain path, which is the whole
   // point: the proxy route re-resolves the deployment, re-applies the private
@@ -122,7 +140,7 @@ export async function proxy(request: NextRequest): Promise<NextResponse> {
     const { resolveHostRoute, promoteHostToActive } = await import('@/lib/domain-resolver');
     const route = await resolveHostRoute(hostname);
 
-    if (route) {
+    if (route && isRoutableStatus(route.status)) {
       // A non-primary alias 301s to the primary so a project has one canonical
       // origin. Only ever redirect to a host that is actually serving.
       if (
@@ -152,9 +170,16 @@ export async function proxy(request: NextRequest): Promise<NextResponse> {
       return rewriteToProxy(request, route.slug);
     }
 
-    // An unknown hostname pointed at our ingress must not be served the
-    // dashboard: that would let anyone front the login page from a domain they
-    // control. Answer plainly instead.
+    // Reached when the hostname is unknown, or is known but no longer proven.
+    //
+    // Unknown: it must not be served the dashboard — that would let anyone
+    // front the login page from a domain they control.
+    //
+    // No longer proven (FAILED): the five-strikes teardown flipped it, but the
+    // edge still holds a valid certificate and will keep serving TLS for it
+    // until renewal, because it only consults the ask endpoint to *obtain* a
+    // certificate, never to serve one it already has. This gate is what
+    // actually stops us serving a domain we decided to stop serving.
     return new NextResponse('This domain is not configured on DropDeploy.', {
       status: 404,
       headers: { 'Content-Type': 'text/plain; charset=utf-8' },

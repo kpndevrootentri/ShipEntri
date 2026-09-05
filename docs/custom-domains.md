@@ -77,6 +77,14 @@ the dangling-DNS defence: a hostname whose owner removed the record or let the
 domain lapse stops being served before someone else can register it and inherit
 a live tenant hostname. Five, not one, so a DNS blip doesn't take a site down.
 
+The teardown needs both halves to work. Flipping the status is not enough on its
+own — the edge holds a valid certificate for weeks and will keep completing the
+handshake, because it consults the ask endpoint only to *obtain* a certificate,
+never to serve one it already has. So `src/proxy.ts` also refuses to route any
+host whose status is outside `ISSUABLE_STATUSES`. Routing and issuance are
+deliberately gated on the same set: a host we would not issue for is a host we
+must not serve.
+
 ---
 
 ## Setup
@@ -100,6 +108,9 @@ TLS_CHECK_ENABLED="true"
 PLATFORM_INGRESS_IP="203.0.113.10"
 CUSTOM_DOMAIN_CNAME_TARGET="ingress.en3.wtf"
 INTERNAL_EDGE_TOKEN="$(openssl rand -hex 32)"
+# Any other named host this app answers on, comma-separated. Sub-domains of
+# each entry are covered. Omitting a host that receives traffic means it 404s.
+PLATFORM_EXTRA_HOSTS="status.en3.wtf,internal-lb.example"
 ```
 
 ### 3. Edge
@@ -151,8 +162,11 @@ to loopback at the edge; the token is defence in depth, not the only control.
 projects can never hold one hostname, which is the takeover vector.
 
 **Unknown hosts get a 404, not the dashboard.** Serving the login page from a
-domain an attacker controls would be a phishing primitive. IP literals and
-`localhost` are exempt so LAN dev and health checks still work.
+domain an attacker controls would be a phishing primitive. `BASE_DOMAIN`,
+`APP_URL`'s host, `localhost` and IP literals are exempt so LAN dev and health
+checks still work. Any *other* named host the platform answers on — a monitoring
+alias, a staging CNAME, a health check that connects by name — must be listed in
+`PLATFORM_EXTRA_HOSTS`, or it will 404 once the feature is on.
 
 **Rate limits.** Add/update 20/min/user; manual verify 6/min/user (each call
 fans out to several outbound DNS queries against a user-chosen hostname); the

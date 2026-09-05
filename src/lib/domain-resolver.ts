@@ -1,4 +1,6 @@
 import type { DomainRoute } from '@/repositories/domain.repository';
+import { normalizeHostKey } from '@/lib/host-key';
+import { PROMOTABLE_STATUSES } from '@/lib/domain-status';
 
 /**
  * Host → project-slug resolution for the proxy hot path.
@@ -21,9 +23,11 @@ import type { DomainRoute } from '@/repositories/domain.repository';
  * a change — never a privacy or authorisation decision, which the proxy route
  * re-evaluates from the database on every request regardless.
  *
- * `prisma` and `ioredis` are imported lazily so that `src/proxy.ts` — which
- * runs on every single request, including ones that never touch a custom
- * domain — does not pull them into its bundle unless a candidate host arrives.
+ * `prisma` and `ioredis` are imported lazily so that a request which never
+ * touches a custom domain never *executes* their module initialisation — the
+ * connection setup, not the download. Next bundles middleware as a single unit
+ * and statically analyses literal dynamic imports, so this defers execution,
+ * not bundle size; do not read it as a size optimisation.
  */
 
 const L1_TTL_MS = 60_000;
@@ -91,8 +95,7 @@ async function l2Set(host: string, route: DomainRoute | null): Promise<void> {
  * not a known custom domain.
  */
 export async function resolveHostRoute(hostname: string): Promise<DomainRoute | null> {
-  // Strip the port a local dev request carries; the DB stores bare hostnames.
-  const host = hostname.toLowerCase().split(':')[0].replace(/\.$/, '');
+  const host = normalizeHostKey(hostname);
   if (!host) return null;
 
   const cached = l1Get(host);
@@ -117,7 +120,7 @@ export async function resolveHostRoute(hostname: string): Promise<DomainRoute | 
  * how a host routes: add, verify, status change, primary swap, delete.
  */
 export async function invalidateHost(...hostnames: string[]): Promise<void> {
-  const hosts = hostnames.map((h) => h.toLowerCase().split(':')[0]).filter(Boolean);
+  const hosts = hostnames.map(normalizeHostKey).filter(Boolean);
   if (hosts.length === 0) return;
 
   for (const host of hosts) l1.delete(host);
@@ -140,15 +143,15 @@ export async function invalidateHost(...hostnames: string[]): Promise<void> {
  * most once per cache TTL per instance, not once per request.
  *
  * Implemented here against Prisma directly rather than through DomainService so
- * that `src/proxy.ts` never has to pull the service's config, Zod and DNS
- * dependencies into the middleware bundle.
+ * that the proxy path never initialises the service's config, Zod and DNS
+ * dependencies.
  */
 export async function promoteHostToActive(hostname: string): Promise<void> {
-  const host = hostname.toLowerCase().split(':')[0];
+  const host = normalizeHostKey(hostname);
   try {
     const { prisma } = await import('@/lib/prisma');
     const { count } = await prisma.customDomain.updateMany({
-      where: { hostname: host, status: { in: ['VERIFIED', 'PROVISIONING'] } },
+      where: { hostname: host, status: { in: PROMOTABLE_STATUSES } },
       data: { status: 'ACTIVE', certIssuedAt: new Date(), lastError: null, failureCount: 0 },
     });
     if (count > 0) await invalidateHost(host);

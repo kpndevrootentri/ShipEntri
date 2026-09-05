@@ -1,6 +1,7 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import type { DomainStatus, DomainView, DnsInstruction } from '@/types/domain.types';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -25,34 +26,9 @@ import {
 // Types
 // ---------------------------------------------------------------------------
 
-type DomainStatus =
-  | 'PENDING_DNS'
-  | 'VERIFYING'
-  | 'VERIFIED'
-  | 'PROVISIONING'
-  | 'ACTIVE'
-  | 'FAILED';
-
-interface DnsRecord {
-  kind: 'A' | 'CNAME' | 'TXT';
-  name: string;
-  value: string;
-  note?: string;
-}
-
-interface Domain {
-  id: string;
-  hostname: string;
-  status: DomainStatus;
-  isPrimary: boolean;
-  redirectToPrimary: boolean;
-  isApex: boolean;
-  verifiedAt: string | null;
-  lastCheckedAt: string | null;
-  lastError: string | null;
-  createdAt: string;
-  dnsRecords: DnsRecord[];
-}
+// Shapes come from the API contract itself (`@/types/domain.types`) rather than
+// being restated here — `import type` is erased at compile time, so a client
+// component can share them freely, and they cannot drift from the server.
 
 /** Statuses that are still moving — the panel polls while any domain is in one. */
 const IN_FLIGHT: DomainStatus[] = ['PENDING_DNS', 'VERIFYING', 'VERIFIED', 'PROVISIONING'];
@@ -103,14 +79,24 @@ const STATUS_META: Record<
 // CopyField
 // ---------------------------------------------------------------------------
 
+/** How long the copy button shows its confirmation tick. */
+const COPIED_FEEDBACK_MS = 1500;
+
 function CopyField({ value }: { value: string }): React.ReactElement {
   const [copied, setCopied] = useState(false);
+
+  // Finding 13: the timeout has to be cancellable, otherwise unmounting within
+  // the feedback window sets state on a component that is gone.
+  useEffect(() => {
+    if (!copied) return;
+    const timeoutId = setTimeout(() => setCopied(false), COPIED_FEEDBACK_MS);
+    return () => clearTimeout(timeoutId);
+  }, [copied]);
 
   const copy = async (): Promise<void> => {
     try {
       await navigator.clipboard.writeText(value);
       setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
     } catch {
       // Clipboard is unavailable outside a secure context — the value is
       // still selectable on screen, so there is nothing to report.
@@ -138,7 +124,7 @@ function CopyField({ value }: { value: string }): React.ReactElement {
 // DnsRecordTable
 // ---------------------------------------------------------------------------
 
-function DnsRecordTable({ records }: { records: DnsRecord[] }): React.ReactElement {
+function DnsRecordTable({ records }: { records: DnsInstruction[] }): React.ReactElement {
   return (
     <div className="rounded-lg border divide-y">
       {records.map((record) => (
@@ -168,15 +154,19 @@ function DomainRow({
   projectId,
   onChanged,
 }: {
-  domain: Domain;
+  domain: DomainView;
   projectId: string;
   onChanged: () => void;
 }): React.ReactElement {
   const [busy, setBusy] = useState<'verify' | 'primary' | 'delete' | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [showRecords, setShowRecords] = useState(domain.status !== 'ACTIVE');
+  // Only a manual collapse is state; the default follows the live status rather
+  // than freezing whatever it was at mount.
+  const [collapsedByUser, setCollapsedByUser] = useState(false);
 
   const meta = STATUS_META[domain.status];
+  const isLive = domain.status === 'ACTIVE';
+  const showRecords = !isLive && !collapsedByUser;
 
   const call = async (
     action: 'verify' | 'primary' | 'delete',
@@ -207,7 +197,7 @@ function DomainRow({
         <div className="min-w-0 space-y-1">
           <div className="flex items-center gap-2 flex-wrap">
             <Globe className="h-4 w-4 text-muted-foreground shrink-0" />
-            {domain.status === 'ACTIVE' ? (
+            {isLive ? (
               <a
                 href={`https://${domain.hostname}`}
                 target="_blank"
@@ -248,7 +238,7 @@ function DomainRow({
             )}
           </Button>
 
-          {domain.status === 'ACTIVE' && !domain.isPrimary && (
+          {isLive && !domain.isPrimary && (
             <Button
               variant="ghost"
               size="icon"
@@ -296,11 +286,11 @@ function DomainRow({
 
       {error && <p className="text-xs text-destructive">{error}</p>}
 
-      {domain.status !== 'ACTIVE' && (
+      {!isLive && (
         <>
           <button
             type="button"
-            onClick={() => setShowRecords((v) => !v)}
+            onClick={() => setCollapsedByUser((collapsed) => !collapsed)}
             className="text-xs font-medium text-muted-foreground hover:text-foreground"
           >
             {showRecords ? 'Hide DNS records' : 'Show DNS records'}
@@ -428,52 +418,59 @@ function AddDomainForm({
 const POLL_INTERVAL_MS = 15_000;
 
 export function DomainsPanel({ projectId }: { projectId: string }): React.ReactElement {
-  const [domains, setDomains] = useState<Domain[]>([]);
+  const [domains, setDomains] = useState<DomainView[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const timer = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const fetchDomains = useCallback(() => {
-    setError(null);
-    return fetch(`/api/projects/${projectId}/domains`)
-      .then((res) => res.json())
-      .then((data) => {
+  const fetchDomains = useCallback(
+    async (signal?: AbortSignal): Promise<void> => {
+      setError(null);
+      try {
+        const res = await fetch(`/api/projects/${projectId}/domains`, { signal });
+        const data = await res.json();
         if (data?.success && data.data) {
           setDomains(data.data);
         } else {
           setError(data?.error?.message ?? 'Failed to load domains');
         }
-      })
-      .catch(() => setError('Failed to load domains'))
-      .finally(() => setLoading(false));
-  }, [projectId]);
+      } catch (err) {
+        // An abort is this component unmounting or re-fetching, not a failure —
+        // reporting it would flash an error on the way out.
+        if ((err as Error)?.name === 'AbortError') return;
+        setError('Failed to load domains');
+      } finally {
+        if (!signal?.aborted) setLoading(false);
+      }
+    },
+    [projectId],
+  );
 
   useEffect(() => {
-    void fetchDomains();
+    const controller = new AbortController();
+    void fetchDomains(controller.signal);
+    return () => controller.abort();
   }, [fetchDomains]);
+
+  // Derived during render, not stored: this is what keeps the effect below off
+  // the `domains` array, whose identity changes on every poll.
+  const isSettling = domains.some((domain) => IN_FLIGHT.includes(domain.status));
 
   // Poll only while something is still settling. A DNS change can land minutes
   // after the user leaves this tab open, and the background worker is what
   // actually advances the state — this just picks the change up without a
-  // manual refresh. Once every domain is terminal the timer is torn down.
+  // manual refresh. Once every domain is terminal the interval is torn down and
+  // not recreated.
   useEffect(() => {
-    const settling = domains.some((d) => IN_FLIGHT.includes(d.status));
-    if (!settling) {
-      if (timer.current) {
-        clearInterval(timer.current);
-        timer.current = null;
-      }
-      return;
-    }
-    if (timer.current) return;
-    timer.current = setInterval(() => void fetchDomains(), POLL_INTERVAL_MS);
+    if (!isSettling) return;
+
+    const controller = new AbortController();
+    const intervalId = setInterval(() => void fetchDomains(controller.signal), POLL_INTERVAL_MS);
+
     return () => {
-      if (timer.current) {
-        clearInterval(timer.current);
-        timer.current = null;
-      }
+      clearInterval(intervalId);
+      controller.abort();
     };
-  }, [domains, fetchDomains]);
+  }, [isSettling, fetchDomains]);
 
   return (
     <Card>
@@ -506,14 +503,14 @@ export function DomainsPanel({ projectId }: { projectId: string }): React.ReactE
                 key={domain.id}
                 domain={domain}
                 projectId={projectId}
-                onChanged={fetchDomains}
+                onChanged={() => void fetchDomains()}
               />
             ))}
           </div>
         )}
 
         <div className="pt-2">
-          <AddDomainForm projectId={projectId} onCreated={fetchDomains} />
+          <AddDomainForm projectId={projectId} onCreated={() => void fetchDomains()} />
         </div>
       </CardContent>
     </Card>

@@ -1,10 +1,7 @@
 import { randomBytes } from 'crypto';
 import type { CustomDomain, DomainStatus } from '@prisma/client';
-import {
-  domainRepository,
-  ISSUABLE_STATUSES,
-  type IDomainRepository,
-} from '@/repositories/domain.repository';
+import { domainRepository, type IDomainRepository } from '@/repositories/domain.repository';
+import { ISSUABLE_STATUSES } from '@/lib/domain-status';
 import { projectRepository, type IProjectRepository } from '@/repositories/project.repository';
 import { userRepository, type IUserRepository } from '@/repositories/user.repository';
 import { auditLogRepository, type IAuditLogRepository } from '@/repositories/audit-log.repository';
@@ -19,6 +16,7 @@ import {
   type AddDomainDto,
   type UpdateDomainDto,
 } from '@/validators/domain.validator';
+import type { DomainView, DnsInstruction, DnsRecordKind } from '@/types/domain.types';
 import {
   NotFoundError,
   ConflictError,
@@ -44,6 +42,13 @@ export const VERIFY_PREFIX = 'dropdeploy-verify=';
  */
 const MAX_CONSECUTIVE_FAILURES = 5;
 
+/**
+ * Entropy in the ownership TXT token. 24 bytes → a 32-character base64url
+ * string: far beyond guessing, and still short enough to paste into a registrar
+ * form that may not wrap.
+ */
+const VERIFICATION_TOKEN_BYTES = 24;
+
 /** Certificate authority the platform expects to be allowed by any CAA record. */
 const CA_IDENTIFIER = 'letsencrypt.org';
 
@@ -59,30 +64,7 @@ const TWO_LABEL_SUFFIXES = new Set([
   'co.nz', 'co.za', 'co.jp', 'com.br', 'com.mx', 'com.sg', 'com.tr',
 ]);
 
-export type DnsRecordKind = 'A' | 'CNAME' | 'TXT';
-
-export interface DnsInstruction {
-  kind: DnsRecordKind;
-  /** The name to enter at the registrar, relative to the zone where possible. */
-  name: string;
-  value: string;
-  note?: string;
-}
-
-/** A domain plus everything the settings UI needs to render it. */
-export interface DomainView {
-  id: string;
-  hostname: string;
-  status: DomainStatus;
-  isPrimary: boolean;
-  redirectToPrimary: boolean;
-  isApex: boolean;
-  verifiedAt: string | null;
-  lastCheckedAt: string | null;
-  lastError: string | null;
-  createdAt: string;
-  dnsRecords: DnsInstruction[];
-}
+export type { DomainView, DnsInstruction, DnsRecordKind };
 
 /** Outcome of one DNS verification pass. */
 export interface CheckResult {
@@ -159,7 +141,7 @@ export class DomainService implements IDomainService {
       created = await this.domainRepo.create({
         hostname,
         projectId,
-        verificationToken: randomBytes(24).toString('base64url'),
+        verificationToken: randomBytes(VERIFICATION_TOKEN_BYTES).toString('base64url'),
       });
     } catch (err) {
       if (typeof err === 'object' && err !== null && (err as { code?: string }).code === 'P2002') {
@@ -417,9 +399,13 @@ export class DomainService implements IDomainService {
       const issue = records.map((r) => r.issue).filter((v): v is string => typeof v === 'string');
       if (issue.length === 0) continue; // no CAA at this level — keep climbing
 
-      const allowed = issue.some((v) => {
-        const authority = v.trim().split(';')[0].trim().toLowerCase();
-        return authority === CA_IDENTIFIER || authority === ';';
+      // A CAA value is `<authority-domain>[; params]`. An *empty* authority is
+      // the `0 issue ";"` form, which per RFC 8659 forbids issuance entirely —
+      // so it correctly falls through to "not allowed" rather than being
+      // special-cased as permissive.
+      const allowed = issue.some((value) => {
+        const authority = value.trim().split(';')[0].trim().toLowerCase();
+        return authority === CA_IDENTIFIER;
       });
       return allowed ? null : name;
     }

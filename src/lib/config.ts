@@ -63,6 +63,11 @@ const envSchema = z.object({
   INTERNAL_EDGE_TOKEN: z.string().min(16).optional(),
   // Comma-separated hostnames that may never be claimed as custom domains.
   CUSTOM_DOMAIN_DENYLIST: z.string().optional(),
+  // Comma-separated extra hostnames that belong to the platform itself
+  // (monitoring aliases, staging CNAMEs, health checks that connect by name).
+  // Without these the proxy 404s any named host it does not recognise once
+  // custom domains are enabled.
+  PLATFORM_EXTRA_HOSTS: z.string().optional(),
 });
 
 type Env = z.infer<typeof envSchema>;

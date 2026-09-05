@@ -320,6 +320,27 @@ describe('runCheck', () => {
     expect(result.message).toMatch(/CAA/);
   });
 
+  it('treats a bare-semicolon CAA record as forbidding issuance', async () => {
+    // `0 issue ";"` means no CA may issue (RFC 8659). It must not be read as
+    // permissive just because the authority field is empty.
+    const domain = makeDomain();
+    const h = harness({ domains: [domain] });
+    happyDns(h);
+    h.dns.resolveCaa.mockResolvedValue([{ issue: ';' }]);
+    const result = await h.service.runCheck(domain);
+    expect(result.status).toBe<DomainStatus>('FAILED');
+    expect(result.message).toMatch(/CAA/);
+  });
+
+  it('passes when a CAA record allows Let’s Encrypt with extra parameters', async () => {
+    const domain = makeDomain();
+    const h = harness({ domains: [domain] });
+    happyDns(h);
+    h.dns.resolveCaa.mockResolvedValue([{ issue: 'letsencrypt.org; accounturi=https://example' }]);
+    const result = await h.service.runCheck(domain);
+    expect(result.status).toBe<DomainStatus>('PROVISIONING');
+  });
+
   it('passes when a CAA record explicitly allows Let’s Encrypt', async () => {
     const domain = makeDomain();
     const h = harness({ domains: [domain] });
