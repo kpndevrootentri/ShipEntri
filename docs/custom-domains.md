@@ -131,14 +131,42 @@ matter more than they look:
 
 ### 4. Background worker
 
-```bash
-npm run worker:domains
+Add a third app to `ecosystem.config.js` alongside `dropdeploy-app` and
+`dropdeploy-worker` — see [deployment.md](deployment.md) for the full file:
+
+```js
+{
+  name: 'dropdeploy-domains',
+  script: 'node_modules/.bin/tsx',
+  args: 'src/workers/domain.worker.ts',
+  cwd: '/home/ubuntu/dropdeploy',
+  instances: 1,
+  exec_mode: 'fork',
+  env_file: '/home/ubuntu/dropdeploy/.env',
+  restart_delay: 5000,
+  max_restarts: 10,
+  log_file: '/home/ubuntu/logs/domains.log',
+  error_file: '/home/ubuntu/logs/domains-error.log',
+}
 ```
+
+```bash
+pm2 start /home/ubuntu/ecosystem.config.js --only dropdeploy-domains
+pm2 save
+```
+
+`instances` must stay at 1: the sweep is a repeatable BullMQ job with a fixed job
+id, so a second copy only duplicates the DNS fan-out. It is safe to start before
+the feature is switched on — with `CUSTOM_DOMAINS_ENABLED=false` it logs a
+warning and idles.
 
 Sweeps non-terminal domains every 2 minutes with per-domain exponential backoff
 (2 min → 1 h). Without it, a user who adds the DNS records and never returns to
 press "Verify" stays on `PENDING_DNS` forever, and no `ACTIVE` domain is ever
 re-checked.
+
+For local development `npm run worker:domains` runs the same thing in the
+foreground.
 
 ### 5. Quota
 

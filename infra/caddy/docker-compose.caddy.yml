@@ -2,19 +2,25 @@
 #
 #   docker compose -f infra/caddy/docker-compose.caddy.yml up -d
 #
-# The image needs a DNS-provider plugin for the wildcard certificate; build it
-# with xcaddy, e.g.:
-#   xcaddy build --with github.com/caddy-dns/cloudflare
+# The stock image is enough for the cutover: the wildcard is served from the
+# certbot files mounted below, and custom domains use HTTP-01/TLS-ALPN. A DNS
+# provider plugin is only needed later, when Caddy takes over wildcard issuance
+# (see docs/nginx-to-caddy-cutover.md) — build that image with:
+#   xcaddy build --with github.com/caddy-dns/route53
 services:
   caddy:
     image: caddy:2-alpine
     container_name: dropdeploy-caddy
     restart: unless-stopped
-    # host networking keeps 127.0.0.1:3001 reachable as the upstream and lets
+    # host networking keeps 127.0.0.1:3000 reachable as the upstream and lets
     # the app see real client addresses.
     network_mode: host
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # The existing certbot wildcard. Read-only: certbot owns these files,
+      # Caddy only reads them. /etc/letsencrypt/live/* are symlinks into
+      # ../archive/, so the whole directory has to be mounted, not just live/.
+      - /etc/letsencrypt:/etc/letsencrypt:ro
       # Certificates and ACME account state MUST be durable. On a fresh volume
       # Caddy re-orders every certificate it previously held, which is the
       # fastest way to exhaust the Let's Encrypt weekly quota.
@@ -22,11 +28,12 @@ services:
       - caddy_config:/config
     environment:
       BASE_DOMAIN: ${BASE_DOMAIN}
-      APP_UPSTREAM: ${APP_UPSTREAM:-127.0.0.1:3001}
+      # Check the real port — nginx proxied to 3000, not 3001.
+      APP_UPSTREAM: ${APP_UPSTREAM:-127.0.0.1:3000}
       INTERNAL_EDGE_TOKEN: ${INTERNAL_EDGE_TOKEN}
       ACME_EMAIL: ${ACME_EMAIL}
-      DNS_PROVIDER: ${DNS_PROVIDER:-cloudflare}
-      DNS_API_TOKEN: ${DNS_API_TOKEN}
+      WILDCARD_CERT: ${WILDCARD_CERT:-/etc/letsencrypt/live/app.en3.wtf/fullchain.pem}
+      WILDCARD_KEY: ${WILDCARD_KEY:-/etc/letsencrypt/live/app.en3.wtf/privkey.pem}
 
 volumes:
   caddy_data:
